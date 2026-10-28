@@ -7,6 +7,7 @@ import { clamp, normalizeAngle } from '../core/util.js';
 import { chargeFuel } from './economy.js';
 import { getOrder, refreshTransitStatus } from './orders.js';
 import { getVehicleStats, getPlayerVehicle } from './stats.js';
+import { updateStreetLamps } from './streetLamps.js';
 
 export const DRIFT_MIN_SPEED = 70; // px/s para empezar a derrapar
 const DRIFT_KEEP_SPEED = 45; // por debajo de esto el derrape termina solo
@@ -257,6 +258,8 @@ export function updatePlayerVehicle(game, dt) {
   if (contact) respondToWall(game, p, drift, contact, moveAngle, dt);
   else game.runtime.wallContact = false;
   const moved = Math.hypot(p.x - startX, p.y - startY);
+  // Farolas: se derriban al pasar por encima y vuelven a su sitio al rato
+  updateStreetLamps(game, dt, type, moveAngle);
 
   if (moved > 0) {
     p.distanceDriven += moved;

@@ -20,6 +20,8 @@ import { Notifications } from './ui/notifications.js';
 import { initTooltip } from './ui/tooltip.js';
 import { $ } from './ui/dom.js';
 
+const GRAPHICS_LEVELS = ['alta', 'media', 'baja'];
+
 function start() {
   const settings = loadSettings();
   const game = Game.create();
@@ -36,6 +38,7 @@ function start() {
     minimapCanvas: $('#minimap'),
     initialMode: settings.view === '2d' ? '2d' : '3d',
     cameraMode: settings.camera,
+    quality: GRAPHICS_LEVELS.includes(settings.graphics) ? settings.graphics : 'alta',
     onChange: (mode) => updateViewButtons(mode),
     onError: (text) => notifications.push({ type: 'warn', icon: '🧊', title: 'Modo 3D no disponible', text }),
   });
@@ -147,7 +150,7 @@ function start() {
 
   function openMenu() {
     if (modals.isOpen) return;
-    modals.open({ id: 'menu', title: 'Menú', html: menuHtml({ sound: settings.sound }), onAction: onMenuAction });
+    modals.open({ id: 'menu', title: 'Menú', html: menuHtml({ sound: settings.sound, graphics: settings.graphics }), onAction: onMenuAction });
   }
 
   function onMenuAction(action, entry) {
@@ -156,6 +159,16 @@ function start() {
         game.save();
         notifications.push({ type: 'success', icon: '💾', title: 'Partida guardada', text: '' });
         break;
+      case 'graphics': {
+        // Alta → Media → Baja → Alta
+        const index = GRAPHICS_LEVELS.indexOf(settings.graphics);
+        settings.graphics = GRAPHICS_LEVELS[(index + 1) % GRAPHICS_LEVELS.length];
+        saveSettings(settings);
+        view.setQuality(settings.graphics);
+        modals.close(entry);
+        openMenu();
+        break;
+      }
       case 'sound':
         toggleSound();
         modals.close(entry);
@@ -277,6 +290,7 @@ function start() {
   events.on('achievementUnlocked', () => sfx.play('achievement'));
   events.on('missionCompleted', () => sfx.play('achievement'));
   events.on('crash', ({ impact }) => { if (impact > 70) sfx.play('crash'); });
+  events.on('lampHit', () => sfx.play('lamp'));
   events.on('driftStart', () => sfx.startScreech());
   events.on('driftEnd', () => sfx.stopScreech());
   events.on('driftBoost', () => sfx.play('boost'));

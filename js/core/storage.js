@@ -3,6 +3,7 @@
 import { CITY_LAYOUT_VERSION, SAVE_KEY, SAVE_VERSION, SETTINGS_KEY } from '../config/constants.js';
 import { mergeDefaults } from './util.js';
 import { createInitialState } from './state.js';
+import { sanitizeCompany } from '../systems/branding.js';
 
 function safeStorage() {
   try {
@@ -131,15 +132,17 @@ export function sanitizeState(state, city, sameCity = true) {
     const name = typeof worker.name === 'string' ? worker.name.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 18) : '';
     worker.name = name || `Empleado ${index + 1}`;
   });
+  // Imagen de la empresa: las partidas antiguas no la tenían y un guardado editado puede traer colores raros
+  state.company = sanitizeCompany(state.company);
   return state;
 }
 
 export function loadSettings() {
   try {
     const raw = safeStorage()?.getItem(SETTINGS_KEY);
-    return { sound: true, view: '3d', ...(raw ? JSON.parse(raw) : {}) };
+    return { sound: true, view: '3d', graphics: 'alta', ...(raw ? JSON.parse(raw) : {}) };
   } catch {
-    return { sound: true, view: '3d' };
+    return { sound: true, view: '3d', graphics: 'alta' };
   }
 }
 

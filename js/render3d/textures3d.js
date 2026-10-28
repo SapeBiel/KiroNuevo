@@ -6,6 +6,31 @@ import { drawOutlinedText, drawPin } from '../render/sprites.js';
 
 let maxAnisotropy = 1;
 
+/** Capa de Three.js para lo que va encima de todo (etiquetas, pines): no pasa por el post-procesado. */
+export const OVERLAY_LAYER = 1;
+
+/** Textura de nube suave (varias manchas difuminadas), generada una vez. */
+let cloudTexture = null;
+export function getCloudTexture() {
+  if (!cloudTexture) {
+    const canvas = makeCanvas(256, 128);
+    const ctx = canvas.getContext('2d');
+    const puffs = [[70, 78, 46], [118, 60, 56], [168, 72, 46], [205, 84, 32], [40, 88, 30], [130, 88, 50]];
+    for (const [x, y, r] of puffs) {
+      const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+      g.addColorStop(0, 'rgba(255,255,255,0.95)');
+      g.addColorStop(0.6, 'rgba(255,255,255,0.55)');
+      g.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    cloudTexture = toTexture(canvas);
+  }
+  return cloudTexture;
+}
+
 export function setMaxAnisotropy(value) {
   maxAnisotropy = Math.max(1, value || 1);
 }
@@ -44,6 +69,7 @@ export function createLabel(text, opts = {}) {
     transparent: true, depthTest: false, depthWrite: false, fog: false,
   }));
   sprite.renderOrder = 20;
+  sprite.layers.set(OVERLAY_LAYER); // se pinta después del post-procesado, nítida y sin brillo
   sprite.userData.label = { key: null, aspect: 1, pxHeight: 16 };
   setLabelText(sprite, text, opts);
   return sprite;

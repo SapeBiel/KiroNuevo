@@ -74,6 +74,21 @@ function plain(color, { emissive = null, intensity = 0 } = {}) {
   return material;
 }
 
+// Fachadas de cristal: material físico que refleja el cielo pre-calculado (se atenúa de noche)
+const glassMaterials = new Set();
+let buildingEnv = null;
+let buildingEnvLevel = 0.8;
+
+export function setBuildingEnvironment(texture, level) {
+  const changed = texture !== buildingEnv;
+  buildingEnv = texture;
+  buildingEnvLevel = level;
+  for (const material of glassMaterials) {
+    if (changed) { material.envMap = texture; material.needsUpdate = true; }
+    material.envMapIntensity = level;
+  }
+}
+
 function wallMaterial(style, color, locked) {
   const key = `${style}|${color}|${locked}`;
   let material = wallMaterials.get(key);
@@ -81,9 +96,15 @@ function wallMaterial(style, color, locked) {
     const textures = getWallTextures(style);
     const tint = new THREE.Color(color);
     if (locked) tint.lerp(LOCKED_TINT, 0.62);
-    material = new THREE.MeshLambertMaterial({
+    const params = {
       color: tint, map: textures.map, emissive: new THREE.Color('#ffd58a'), emissiveMap: textures.emissiveMap, emissiveIntensity: 0,
-    });
+    };
+    if (style === 'glass' && !locked) {
+      material = new THREE.MeshStandardMaterial({ ...params, roughness: 0.16, metalness: 0.55, envMap: buildingEnv, envMapIntensity: buildingEnvLevel });
+      glassMaterials.add(material);
+    } else {
+      material = new THREE.MeshLambertMaterial(params);
+    }
     material.userData.lockedWall = locked;
     wallMaterials.set(key, material);
   }

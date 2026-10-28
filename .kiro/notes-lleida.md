@@ -18,3 +18,13 @@
   los 3 círculos fuera de las casillas sólidas. respondToWall(): de frente (into > 0.8) para o rebota;
   de refilón resbala, pierde poca velocidad y alinea el morro con la pared. Acelerando contra una pared
   se puede girar en el sitio (runtime.wallContact).
+
+## Gráficos: IMPLEMENTADO, SIN PROBAR
+- render3d/postfx.js: escena a RT HalfFloat MSAA, bright pass + blur (1/2 y 1/4), composite ACES + grading + viñeta + grano.
+- Etiquetas/pines en OVERLAY_LAYER (1), pintados tras el composite con autoClear=false y shadowMap.autoUpdate=false.
+- QUALITY alta/media/baja en renderer3d (settings.graphics, Menú → Gráficos 3D). Nubes (sprites). Cristal = MeshStandard con env.
+
+## Farolas derribables
+- Lógica: `js/systems/streetLamps.js` (runtime.brokenLamps Map índice→{age,dirX,dirY,rising}; 10 s; caída 0.55 s; se levanta 0.8 s; espera si el coche está encima). Llamado desde updatePlayerVehicle tras el movimiento. Evento `lampHit`. Frena ×0.94.
+- 3D: props3d buildLamps().update(broken, lampPose) (poste gira sobre su base, bombilla oculta, muñón con frustumCulled=false). Luces reales saltan farolas rotas.
+- 2D: farolas ya no van en el mapa estático; renderer.drawLampPosts() cada fotograma; noche ignora rotas. Sonido 'lamp'.

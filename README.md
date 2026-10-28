@@ -29,6 +29,12 @@ Cada partida nueva genera una ciudad distinta a partir de una semilla aleatoria 
 
 Las partidas guardadas con la versión anterior (ciudad fija) conservan el progreso, pero estrenan ciudad: sus pedidos en curso se descartan y la furgoneta vuelve al almacén.
 
+## Gráficos 3D
+
+El modo 3D usa un post-procesado propio: imagen HDR con antialiasing, brillo (bloom) en luces, faros y ventanas de noche, mapeo de tonos ACES, corrección de color según la hora (cálida al atardecer, azulada de noche), viñeta y un grano muy suave. Las torres de cristal reflejan el cielo y hay nubes que se mueven con el viento. Las etiquetas y pines se pintan encima, sin filtros, para que se lean bien.
+
+En **Menú → Gráficos 3D** se elige la calidad (se guarda): **Alta** (todo, sombras de 4096 px), **Media** (sin brillo, sombras de 2048 px, resolución algo menor) o **Baja** (sin post-procesado ni nubes, para ordenadores lentos).
+
 ## Controles
 
 | Acción | Teclas |

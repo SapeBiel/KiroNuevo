@@ -20,6 +20,7 @@ import { buyVehicle, driveVehicle } from '../systems/fleet.js';
 import { hireWorker, fireWorker, cycleWorkerVehicle, renameWorker, updateWorkers } from '../systems/workers.js';
 import { buyDrone, updateDrones } from '../systems/drones.js';
 import { unlockZone } from '../systems/progression.js';
+import { setCompany } from '../systems/branding.js';
 import { updateDayCycle, startNextDay } from '../systems/dayCycle.js';
 import { generateMissions, trackMissionProgress } from '../systems/missions.js';
 import { updateAchievements } from '../systems/achievements.js';
@@ -43,7 +44,7 @@ export class Game {
     this.city.setUnlockedZones(this.state.zones);
 
     this.events.on('orderDelivered', (delivery) => trackMissionProgress(this, delivery));
-    for (const name of ['upgradePurchased', 'workerHired', 'workerRenamed', 'vehicleBought', 'droneBought', 'zoneUnlocked', 'levelUp', 'daySummary', 'newDay']) {
+    for (const name of ['upgradePurchased', 'workerHired', 'workerRenamed', 'companyChanged', 'vehicleBought', 'droneBought', 'zoneUnlocked', 'levelUp', 'daySummary', 'newDay']) {
       this.events.on(name, () => this.save());
     }
   }
@@ -218,6 +219,8 @@ export class Game {
   cycleWorkerVehicle(id) { return this.act(cycleWorkerVehicle(this, id)); }
   /** No usa act(): la ventana de renombrar muestra el error ella misma. */
   renameWorker(id, name) { return renameWorker(this, id, name); }
+  /** Nombre, logotipo y colores de la empresa (la ventana muestra el error ella misma). */
+  setCompany(changes) { return setCompany(this, changes); }
   buyDrone(typeId) { return this.act(buyDrone(this, typeId)); }
   unlockZone(id) { return this.act(unlockZone(this, id)); }
 

@@ -9,6 +9,7 @@ import { clamp, distance, formatInt } from '../core/util.js';
 import { clockHour, darknessAt } from '../systems/dayCycle.js';
 import { getOrder } from '../systems/orders.js';
 import { getDrift, rearWheelPositions } from '../systems/playerVehicle.js';
+import { getBrokenLamps, lampPose } from '../systems/streetLamps.js';
 import { renderStaticMap, BUILDING_LIFT } from './mapLayer.js';
 import { drawVehicle, drawDrone, drawPin, drawOutlinedText, roundRect } from './sprites.js';
 import { Effects } from './effects.js';
@@ -58,6 +59,10 @@ export class Renderer {
     events.on('crash', ({ impact, x, y }) => {
       this.effects.sparks(x, y, Math.min(16, 4 + impact / 12));
       this.effects.addShake(Math.min(6, impact / 30));
+    });
+    events.on('lampHit', ({ x, y, speed }) => {
+      this.effects.sparks(x, y, Math.min(14, 6 + speed / 25));
+      this.effects.addShake(Math.min(3, 0.8 + speed / 120));
     });
     events.on('zoneUnlocked', () => {
       this.rebuildStatic();
@@ -204,6 +209,7 @@ export class Renderer {
     const hour = clockHour(state);
     const darkness = darknessAt(hour);
 
+    this.drawLampPosts();
     this.drawZones();
     this.effects.draw(ctx, 'ground');
     this.drawParkedVehicles(darkness);
@@ -224,6 +230,62 @@ export class Renderer {
   inView(x, y, margin = 120) {
     const c = this.camera;
     return x > c.x - margin && x < c.x + c.viewW + margin && y > c.y - margin && y < c.y + c.viewH + margin;
+  }
+
+  /** Farolas vistas desde arriba: de pie son un punto; derribadas, un poste tumbado junto a su muñón. */
+  drawLampPosts() {
+    const { ctx, game } = this;
+    const broken = getBrokenLamps(game);
+    const lamps = game.city.lampPosts;
+    for (let i = 0; i < lamps.length; i++) {
+      const lamp = lamps[i];
+      if (!this.inView(lamp.x, lamp.y, 50)) continue;
+      const entry = broken.get(i);
+      if (!entry) {
+        ctx.fillStyle = 'rgba(10,15,30,0.25)';
+        ctx.beginPath();
+        ctx.arc(lamp.x + 2, lamp.y + 3, 4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#4b5263';
+        ctx.beginPath();
+        ctx.arc(lamp.x, lamp.y, 4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#ffe9a6';
+        ctx.beginPath();
+        ctx.arc(lamp.x, lamp.y, 2, 0, Math.PI * 2);
+        ctx.fill();
+        continue;
+      }
+      const pose = lampPose(entry);
+      const bx = lamp.x + pose.dirX * pose.slide;
+      const by = lamp.y + pose.dirY * pose.slide;
+      const length = Math.sin(pose.tilt) * 34; // desde arriba, cuanto más tumbada más largo se ve el poste
+      const tx = bx + pose.dirX * length;
+      const ty = by + pose.dirY * length;
+      ctx.fillStyle = '#3a404d';
+      ctx.beginPath();
+      ctx.arc(lamp.x, lamp.y, 3, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.save();
+      ctx.lineCap = 'round';
+      ctx.strokeStyle = 'rgba(10,15,30,0.25)';
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.moveTo(bx + 1.5, by + 2);
+      ctx.lineTo(tx + 1.5, ty + 2);
+      ctx.stroke();
+      ctx.strokeStyle = '#4b5263';
+      ctx.lineWidth = 3.5;
+      ctx.beginPath();
+      ctx.moveTo(bx, by);
+      ctx.lineTo(tx, ty);
+      ctx.stroke();
+      ctx.restore();
+      ctx.fillStyle = '#3b4252';
+      ctx.beginPath();
+      ctx.arc(tx, ty, 3.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
   }
 
   drawZones() {
@@ -399,7 +461,11 @@ export class Renderer {
       n.fill();
     };
 
-    for (const lamp of city.lampPosts) if (this.inView(lamp.x, lamp.y, 90)) light(lamp.x, lamp.y, 90, 0.85);
+    // Las farolas derribadas no alumbran
+    const broken = getBrokenLamps(game);
+    city.lampPosts.forEach((lamp, i) => {
+      if (!broken.has(i) && this.inView(lamp.x, lamp.y, 90)) light(lamp.x, lamp.y, 90, 0.85);
+    });
     const depot = city.depot;
     light(depot.zoneCenter.x, depot.zoneCenter.y, 170, 0.9);
     const p = state.player;
@@ -414,8 +480,8 @@ export class Renderer {
     // Brillo cálido de las farolas
     ctx.setTransform(scale, 0, 0, scale, -(camera.x - shakeX) * scale, -(camera.y - shakeY) * scale);
     ctx.globalCompositeOperation = 'lighter';
-    for (const lamp of city.lampPosts) {
-      if (!this.inView(lamp.x, lamp.y, 60)) continue;
+    for (const [i, lamp] of city.lampPosts.entries()) {
+      if (broken.has(i) || !this.inView(lamp.x, lamp.y, 60)) continue;
       const g = ctx.createRadialGradient(lamp.x, lamp.y, 0, lamp.x, lamp.y, 38);
       g.addColorStop(0, `rgba(255,206,120,${0.38 * darkness})`);
       g.addColorStop(1, 'rgba(255,206,120,0)');

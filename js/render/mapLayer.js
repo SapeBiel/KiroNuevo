@@ -36,7 +36,7 @@ export function renderStaticMap(city) {
   drawDepotLot(ctx, city.depot);
   const sorted = [...city.buildings, city.depot].sort((a, b) => a.y - b.y);
   for (const b of sorted) drawBuilding(ctx, b);
-  drawLampPosts(ctx, city);
+  // Las farolas se pintan cada fotograma en renderer.js (se pueden derribar)
   drawStreetNames(ctx, city);
   drawLockedZones(ctx, city);
   return canvas;
@@ -211,23 +211,6 @@ function drawStreetNames(ctx, city) {
       ctx.restore();
     });
   });
-}
-
-function drawLampPosts(ctx, city) {
-  for (const lamp of city.lampPosts) {
-    ctx.fillStyle = 'rgba(10,15,30,0.25)';
-    ctx.beginPath();
-    ctx.arc(lamp.x + 2, lamp.y + 3, 4, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = '#4b5263';
-    ctx.beginPath();
-    ctx.arc(lamp.x, lamp.y, 4, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = '#ffe9a6';
-    ctx.beginPath();
-    ctx.arc(lamp.x, lamp.y, 2, 0, Math.PI * 2);
-    ctx.fill();
-  }
 }
 
 function drawPark(ctx, park, withTrees = true) {

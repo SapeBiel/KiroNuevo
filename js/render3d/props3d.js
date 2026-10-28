@@ -93,15 +93,53 @@ export function buildLamps(city) {
     glowPositions[index * 3 + 1] = poleHeight - 1;
     glowPositions[index * 3 + 2] = lamp.y;
   });
+  // Muñones que quedan en la acera cuando se derriba una farola (solo se pintan los que hagan falta)
+  const stumps = new THREE.InstancedMesh(poleGeometry, poles.material, Math.max(1, lamps.length));
+  stumps.count = 0;
+  // Su esfera envolvente se calcularía con 0 instancias y Three.js no los pintaría nunca
+  stumps.frustumCulled = false;
   poles.castShadow = true;
   heads.castShadow = true;
-  for (const mesh of [poles, heads, bulbs]) {
+  stumps.castShadow = true;
+  for (const mesh of [poles, heads, bulbs, stumps]) {
     mesh.instanceMatrix.needsUpdate = true;
     group.add(mesh);
   }
 
   const glowGeometry = new THREE.BufferGeometry();
   glowGeometry.setAttribute('position', new THREE.BufferAttribute(glowPositions, 3));
+
+  // Coloca una farola inclinada `tilt` rad hacia (dirX, dirZ), con la base desplazada `slide` px.
+  // El poste gira alrededor de su base; la cabeza y la bombilla lo acompañan.
+  const axis = new THREE.Vector3();
+  const place = (index, tilt, dirX, dirZ, slide, intact) => {
+    const lamp = lamps[index];
+    const bx = lamp.x + dirX * slide;
+    const bz = lamp.y + dirZ * slide;
+    const s = Math.sin(tilt);
+    const c = Math.cos(tilt);
+    const lift = s * 1.8; // tumbada, que no se hunda en el suelo
+    if (tilt > 1e-4) dummy.quaternion.setFromAxisAngle(axis.set(dirZ, 0, -dirX), tilt);
+    else dummy.quaternion.identity();
+    const at = (h) => dummy.position.set(bx + dirX * s * h, lift + c * h, bz + dirZ * s * h);
+    at(0);
+    dummy.scale.set(1, poleHeight, 1);
+    dummy.updateMatrix();
+    poles.setMatrixAt(index, dummy.matrix);
+    at(poleHeight + 1);
+    dummy.scale.set(1, 1, 1);
+    dummy.updateMatrix();
+    heads.setMatrixAt(index, dummy.matrix);
+    // La bombilla se rompe con el golpe y vuelve a estar entera cuando la farola se levanta
+    at(poleHeight - 1.2);
+    if (!intact) dummy.scale.set(0, 0, 0);
+    dummy.updateMatrix();
+    bulbs.setMatrixAt(index, dummy.matrix);
+    glowPositions[index * 3] = lamp.x;
+    glowPositions[index * 3 + 1] = intact ? poleHeight - 1 : -9999;
+    glowPositions[index * 3 + 2] = lamp.y;
+  };
+  const animated = new Set();
   const glowMaterial = new THREE.PointsMaterial({
     map: getGlowTexture(), color: '#ffc477', size: 46, sizeAttenuation: true, transparent: true, opacity: 0,
     depthWrite: false, blending: THREE.AdditiveBlending, fog: false,
@@ -120,12 +158,38 @@ export function buildLamps(city) {
       glowMaterial.opacity = Math.min(1, darkness * 1.1) * 0.85;
       glow.visible = darkness > 0.04;
     },
+    /** Dibuja las farolas derribadas (mapa índice → estado de systems/streetLamps.js) y endereza las demás. */
+    update(broken, poseOf) {
+      if (!broken.size && !animated.size) return;
+      for (const index of animated) {
+        if (broken.has(index)) continue;
+        place(index, 0, 0, 0, 0, true);
+        animated.delete(index);
+      }
+      let stumpCount = 0;
+      for (const [index, entry] of broken) {
+        if (index >= lamps.length) continue;
+        const pose = poseOf(entry);
+        place(index, pose.tilt, pose.dirX, pose.dirY, pose.slide, false);
+        animated.add(index);
+        const lamp = lamps[index];
+        dummy.quaternion.identity();
+        dummy.position.set(lamp.x, 0, lamp.y);
+        dummy.scale.set(1.15, 3.2, 1.15);
+        dummy.updateMatrix();
+        stumps.setMatrixAt(stumpCount++, dummy.matrix);
+      }
+      stumps.count = stumpCount;
+      for (const mesh of [poles, heads, bulbs, stumps]) mesh.instanceMatrix.needsUpdate = true;
+      glowGeometry.attributes.position.needsUpdate = true;
+    },
     dispose() {
       for (const geometry of [poleGeometry, headGeometry, bulbGeometry, glowGeometry]) geometry.dispose();
       for (const mesh of [poles, heads, bulbs]) {
         mesh.material.dispose();
         mesh.dispose();
       }
+      stumps.dispose();
       glowMaterial.dispose();
     },
   };

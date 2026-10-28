@@ -3,6 +3,7 @@
 import { CITY_LAYOUT_VERSION, SAVE_VERSION, START_MONEY, START_REPUTATION } from '../config/constants.js';
 import { STARTER_VEHICLE } from '../config/vehicles.js';
 import { ZONE_ORDER } from '../config/zones.js';
+import { DEFAULT_COMPANY } from '../systems/branding.js';
 
 export function createDayStats() {
   return { deliveries: 0, income: 0, fuel: 0, salaries: 0, upkeep: 0, bestStreak: 0, late: 0, urgentOnTime: 0, xp: 0, missionsDone: 0 };
@@ -17,6 +18,7 @@ export function createInitialState(city) {
     citySeed: city.seed, // la ciudad se regenera igual al cargar
     cityLayout: CITY_LAYOUT_VERSION,
     createdAt: Date.now(),
+    company: { ...DEFAULT_COMPANY }, // nombre, logotipo y colores elegidos por el jugador
     time: 0,
     day: 1,
     dayTime: 0,

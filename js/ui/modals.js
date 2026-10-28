@@ -106,7 +106,9 @@ export function helpHtml() {
     <div class="modal-actions"><button class="btn btn-primary" data-modal-action="close" data-autofocus>Entendido</button></div>`;
 }
 
-export function menuHtml({ sound }) {
+const GRAPHICS_LABELS = { alta: 'Alta (brillos y sombras finas)', media: 'Media', baja: 'Baja (equipos lentos)' };
+
+export function menuHtml({ sound, graphics = 'alta' }) {
   return `
     <h2>Menú</h2>
     <p class="muted">El juego está en pausa mientras este menú está abierto. La partida se guarda automáticamente.</p>
@@ -114,6 +116,7 @@ export function menuHtml({ sound }) {
       <button class="btn btn-primary" data-modal-action="close" data-autofocus>▶ Continuar</button>
       <button class="btn" data-modal-action="save">💾 Guardar ahora</button>
       <button class="btn" data-modal-action="sound">${sound ? '🔊 Sonido: activado' : '🔇 Sonido: desactivado'}</button>
+      <button class="btn" data-modal-action="graphics">🎨 Gráficos 3D: ${GRAPHICS_LABELS[graphics] ?? GRAPHICS_LABELS.alta}</button>
       <button class="btn" data-modal-action="help">❓ Cómo se juega</button>
       <button class="btn btn-danger" data-modal-action="reset">🗑 Reiniciar partida</button>
     </div>`;

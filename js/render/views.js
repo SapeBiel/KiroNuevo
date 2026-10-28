@@ -5,7 +5,8 @@ import { Renderer } from './renderer.js';
 import { drawMinimap } from './minimap.js';
 
 export class ViewManager {
-  constructor({ game, canvas2d, canvas3d, minimapCanvas, initialMode = '3d', cameraMode = 'chase', onChange = null, onError = null }) {
+  constructor({ game, canvas2d, canvas3d, minimapCanvas, initialMode = '3d', cameraMode = 'chase', quality = 'alta', onChange = null, onError = null }) {
+    this.quality = quality;
     this.game = game;
     this.canvas2d = canvas2d;
     this.canvas3d = canvas3d;
@@ -73,6 +74,7 @@ export class ViewManager {
           canvas: this.canvas3d,
           game: this.game,
           cameraMode: this.cameraMode,
+          quality: this.quality,
           onContextLost: () => this.fallback('Se perdió el contexto gráfico 3D. Volvemos al modo 2D.'),
         });
       }
@@ -103,6 +105,12 @@ export class ViewManager {
     if (this.mode !== '3d' || !this.renderer3d) return this.cameraMode;
     this.cameraMode = this.renderer3d.toggleCameraMode();
     return this.cameraMode;
+  }
+
+  /** Calidad gráfica del 3D: 'alta', 'media' o 'baja'. */
+  setQuality(quality) {
+    this.quality = quality;
+    this.renderer3d?.setQuality(quality);
   }
 
   resize() {

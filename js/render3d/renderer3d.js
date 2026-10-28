@@ -10,6 +10,7 @@ import { getVehicleType } from '../config/vehicles.js';
 import { clamp, distance, formatInt, normalizeAngle } from '../core/util.js';
 import { clockHour, darknessAt, formatClock } from '../systems/dayCycle.js';
 import { getOrder } from '../systems/orders.js';
+import { getBrokenLamps, lampPose } from '../systems/streetLamps.js';
 import { renderGroundMap } from '../render/mapLayer.js';
 import { drawOutlinedText, roundRect } from '../render/sprites.js';
 import { buildCity, buildOutskirts, segmentHitsBuilding, updateEntryFade } from './buildings3d.js';
@@ -19,9 +20,35 @@ import { cargoSlotsUsed, playerCapacity } from '../systems/orders.js';
 import { getDrift, rearWheelPositions } from '../systems/playerVehicle.js';
 import { Effects3D } from './effects3d.js';
 import {
-  PIN_ANCHOR_Y, PIN_ASPECT, createLabel, disposeSprite, getPinMaterial, getZoneTexture, makeCanvas, scaleSpriteToScreen,
-  setLabelText, setMaxAnisotropy, toTexture,
+  OVERLAY_LAYER, PIN_ANCHOR_Y, PIN_ASPECT, createLabel, disposeSprite, getCloudTexture, getPinMaterial, getZoneTexture, makeCanvas,
+  scaleSpriteToScreen, setLabelText, setMaxAnisotropy, toTexture,
 } from './textures3d.js';
+import { PostFX } from './postfx.js';
+import { setBuildingEnvironment } from './buildings3d.js';
+
+/**
+ * Niveles de calidad: alta = post-procesado con brillo, sombras finas y resolución completa;
+ * media = post-procesado sin brillo y sombras normales; baja = sin post-procesado (equipos modestos).
+ */
+export const QUALITY = {
+  alta: { post: true, bloom: true, shadow: 4096, soft: true, maxPixelRatio: 2, clouds: true },
+  media: { post: true, bloom: false, shadow: 2048, soft: true, maxPixelRatio: 1.5, clouds: true },
+  baja: { post: false, bloom: false, shadow: 1024, soft: false, maxPixelRatio: 1, clouds: false },
+};
+
+// Corrección de color por momento del día (día, atardecer, noche)
+const GRADING = {
+  exposure: [0.95, 1.0, 1.28],
+  saturation: [1.12, 1.18, 0.96],
+  contrast: [1.06, 1.05, 1.08],
+  tint: [[1.02, 1.0, 0.97], [1.08, 0.96, 0.86], [0.86, 0.94, 1.12]],
+  vignette: [0.24, 0.3, 0.38],
+  bloomStrength: [0.35, 0.7, 1.25],
+  bloomThreshold: [1.05, 0.85, 0.55],
+};
+const CLOUD_DAY = new THREE.Color('#ffffff');
+const CLOUD_DUSK = new THREE.Color('#ffc9a6');
+const CLOUD_NIGHT = new THREE.Color('#3a4466');
 
 // Paleta del cielo según la hora: día → atardecer/amanecer → noche.
 const SKY_DAY = new THREE.Color('#8fd0f5');
@@ -60,7 +87,11 @@ function rampNumber(d, day, dusk, night) {
 }
 
 export class Renderer3D {
-  constructor({ canvas, game, cameraMode = 'chase', onContextLost = null }) {
+  constructor({ canvas, game, cameraMode = 'chase', quality = 'alta', onContextLost = null }) {
+    this.quality = QUALITY[quality] ? quality : 'alta';
+    this.grading = {
+      exposure: 1, saturation: 1, contrast: 1, tint: [1, 1, 1], vignette: 0.25, bloomStrength: 0.4, bloomThreshold: 1, time: 0,
+    };
     this.canvas = canvas;
     this.game = game;
     this.onContextLost = onContextLost;
@@ -83,6 +114,12 @@ export class Renderer3D {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     setMaxAnisotropy(this.renderer.capabilities.getMaxAnisotropy());
+    try {
+      this.postfx = new PostFX(this.renderer);
+    } catch (error) {
+      console.warn('Post-procesado no disponible:', error);
+      this.postfx = null;
+    }
 
     this.scene = new THREE.Scene();
     this.scene.background = SKY_DAY.clone();
@@ -103,8 +140,10 @@ export class Renderer3D {
 
     this.createLights();
     this.createSky();
+    this.createClouds();
     this.createEnvironmentMap();
     this.applyProjection();
+    this.applyQuality();
 
     this.effects = new Effects3D();
     this.scene.add(this.effects.group);
@@ -224,6 +263,76 @@ export class Renderer3D {
     this.scene.add(this.skyDome);
   }
 
+  /** Nubes: sprites suaves y altos que se desplazan despacio con el viento. */
+  createClouds() {
+    const { city } = this.game;
+    this.cloudMaterial = new THREE.SpriteMaterial({
+      map: getCloudTexture(), transparent: true, depthWrite: false, fog: false, opacity: 0.85,
+    });
+    this.clouds = new THREE.Group();
+    const span = 1800;
+    for (let i = 0; i < 26; i++) {
+      const sprite = new THREE.Sprite(this.cloudMaterial);
+      const width = 420 + Math.random() * 520;
+      sprite.scale.set(width, width * 0.42, 1);
+      sprite.position.set(
+        -span + Math.random() * (city.widthPx + span * 2),
+        620 + Math.random() * 320,
+        -span + Math.random() * (city.heightPx + span * 2),
+      );
+      sprite.renderOrder = -5;
+      this.clouds.add(sprite);
+    }
+    this.cloudSpan = { minX: -span, maxX: city.widthPx + span };
+    this.scene.add(this.clouds);
+  }
+
+  updateClouds(dt, darkness) {
+    if (!this.clouds.visible) return;
+    for (const cloud of this.clouds.children) {
+      cloud.position.x += dt * (8 + (cloud.scale.x % 7));
+      if (cloud.position.x > this.cloudSpan.maxX) cloud.position.x = this.cloudSpan.minX;
+    }
+    rampColor(this.cloudMaterial.color, darkness, CLOUD_DAY, CLOUD_DUSK, CLOUD_NIGHT);
+    this.cloudMaterial.opacity = rampNumber(darkness, 0.85, 0.8, 0.35);
+  }
+
+  /** Aplica el nivel de calidad gráfica (sombras, resolución, post-procesado, nubes). */
+  applyQuality() {
+    const q = QUALITY[this.quality];
+    this.renderer.shadowMap.type = q.soft ? THREE.PCFSoftShadowMap : THREE.PCFShadowMap;
+    if (this.sun.shadow.mapSize.x !== q.shadow) {
+      this.sun.shadow.mapSize.set(q.shadow, q.shadow);
+      this.sun.shadow.map?.dispose();
+      this.sun.shadow.map = null;
+    }
+    if (this.postfx) this.postfx.bloomEnabled = q.bloom;
+    if (this.clouds) this.clouds.visible = q.clouds;
+    // Cambiar el tipo de sombra obliga a recompilar los materiales
+    this.scene.traverse((object) => {
+      const materials = Array.isArray(object.material) ? object.material : object.material ? [object.material] : [];
+      for (const material of materials) material.needsUpdate = true;
+    });
+  }
+
+  setQuality(quality) {
+    if (!QUALITY[quality] || quality === this.quality) return;
+    this.quality = quality;
+    this.applyQuality();
+    this.resize();
+  }
+
+  /** Corrección de color según lo oscuro que esté (0 = día, 1 = noche). */
+  updateGrading(darkness) {
+    const g = this.grading;
+    for (const key of ['exposure', 'saturation', 'contrast', 'vignette', 'bloomStrength', 'bloomThreshold']) {
+      const [day, dusk, night] = GRADING[key];
+      g[key] = rampNumber(darkness, day, dusk, night);
+    }
+    for (let i = 0; i < 3; i++) g.tint[i] = rampNumber(darkness, GRADING.tint[0][i], GRADING.tint[1][i], GRADING.tint[2][i]);
+    g.time = this.time;
+  }
+
   /** Cielo pre-calculado para los reflejos de carrocerías y cristales de los vehículos. */
   createEnvironmentMap() {
     try {
@@ -256,6 +365,7 @@ export class Renderer3D {
       geometry.dispose();
       material.dispose();
       setVehicleEnvironment(this.envTarget.texture, 0.7);
+      setBuildingEnvironment(this.envTarget.texture, 0.8);
     } catch (error) {
       console.warn('Sin reflejos de entorno:', error);
       this.envTarget = null;
@@ -360,6 +470,7 @@ export class Renderer3D {
       const material = new THREE.SpriteMaterial({ map: toTexture(canvas), transparent: true, depthTest: false, depthWrite: false, fog: false });
       const sprite = new THREE.Sprite(material);
       sprite.renderOrder = 18;
+      sprite.layers.set(OVERLAY_LAYER);
       sprite.position.set(bounds.centerX, 120, bounds.centerY);
       sprite.userData.aspect = 360 / 124;
       this.scene.add(sprite);
@@ -393,6 +504,11 @@ export class Renderer3D {
       events.on('crash', ({ impact, x, y }) => {
         fx.addSparks(x, y, Math.min(16, 4 + impact / 12));
         fx.addShake(Math.min(6, impact / 30));
+      }),
+      // Farola derribada: chispas y cristales de la bombilla, y un pequeño temblor
+      events.on('lampHit', ({ x, y, speed }) => {
+        fx.addSparks(x, y, Math.min(14, 6 + speed / 25));
+        fx.addShake(Math.min(3, 0.8 + speed / 120));
       }),
       events.on('zoneUnlocked', () => fx.addRing(state.player.x, state.player.y, '#ffd166', 260)),
       events.on('levelUp', () => {
@@ -429,9 +545,10 @@ export class Renderer3D {
     const parent = this.canvas.parentElement;
     this.cssW = Math.max(200, parent.clientWidth);
     this.cssH = Math.max(200, parent.clientHeight);
-    this.pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+    this.pixelRatio = Math.min(window.devicePixelRatio || 1, QUALITY[this.quality].maxPixelRatio);
     this.renderer.setPixelRatio(this.pixelRatio);
     this.renderer.setSize(this.cssW, this.cssH, false);
+    this.postfx?.setSize(this.cssW * this.pixelRatio, this.cssH * this.pixelRatio);
     const aspect = this.cssW / this.cssH;
     this.camera.aspect = aspect;
     this.camera.updateProjectionMatrix();
@@ -574,6 +691,7 @@ export class Renderer3D {
     const hour = clockHour(state);
     const darkness = darknessAt(hour);
     this.updateEnvironment(hour, darkness);
+    this.updateClouds(dt, darkness);
     // Los vehículos se colocan antes que la cámara: la vista del conductor depende de su posición
     this.syncVehicles(dt, darkness);
     this.syncDrones(dt, darkness);
@@ -583,6 +701,7 @@ export class Renderer3D {
     this.syncPins();
     this.updateNavigationArrow();
     this.updateZoneLabels(dt);
+    this.lamps.update(getBrokenLamps(this.game), lampPose);
     this.updateLampLights(dt, darkness);
     this.updateFades(dt);
     this.effects.update(dt, this.camera, this.cssH, this.pixelRatio);
@@ -626,12 +745,16 @@ export class Renderer3D {
     u.sunDir.value.copy(direction);
     u.sunStrength.value = rampNumber(darkness, 1, 0.9, 0.22);
     this.skyDome.position.copy(this.camera.position);
+    this.updateGrading(darkness);
 
     if (Math.abs(darkness - this.lastDarkness) > 0.004) {
       this.lastDarkness = darkness;
       this.cityHandle.setNight(darkness);
       this.lamps.setNight(darkness);
-      if (this.envTarget) setVehicleEnvironment(this.envTarget.texture, rampNumber(darkness, 0.7, 0.45, 0.07));
+      if (this.envTarget) {
+        setVehicleEnvironment(this.envTarget.texture, rampNumber(darkness, 0.7, 0.45, 0.07));
+        setBuildingEnvironment(this.envTarget.texture, rampNumber(darkness, 0.8, 0.5, 0.06));
+      }
     }
   }
 
@@ -969,6 +1092,7 @@ export class Renderer3D {
         const sprite = new THREE.Sprite(getPinMaterial('#6c7a96', kind.icon));
         sprite.center.set(0.5, PIN_ANCHOR_Y);
         sprite.renderOrder = 16;
+        sprite.layers.set(OVERLAY_LAYER);
         sprite.userData.aspect = PIN_ASPECT;
         this.pinLayer.add(sprite);
         pin = { sprite, label: null };
@@ -1059,6 +1183,7 @@ export class Renderer3D {
   /** Asigna las farolas más cercanas al jugador a un pequeño grupo de luces reales. */
   updateLampLights(dt, darkness) {
     const lit = darkness > 0.03;
+    const broken = getBrokenLamps(this.game);
     this.lampTimer -= dt;
     if (this.lampTimer <= 0 && lit) {
       this.lampTimer = 0.3;
@@ -1069,16 +1194,21 @@ export class Renderer3D {
         let best = -1;
         let bestDistance = Infinity;
         for (let i = 0; i < lamps.length; i++) {
-          if (taken.has(i)) continue;
+          if (taken.has(i) || broken.has(i)) continue;
           const d = (lamps[i].x - p.x) ** 2 + (lamps[i].y - p.y) ** 2;
           if (d < bestDistance) { bestDistance = d; best = i; }
         }
+        light.userData.lamp = best;
         if (best < 0) continue;
         taken.add(best);
         light.position.set(lamps[best].x, 34, lamps[best].y);
       }
     }
-    for (const light of this.lampLights) light.intensity = lit ? darkness * 2.4 : 0;
+    // Una farola derribada se apaga al instante (sin esperar al próximo reparto de luces)
+    for (const light of this.lampLights) {
+      const lamp = light.userData.lamp ?? -1;
+      light.intensity = lit && lamp >= 0 && !broken.has(lamp) ? darkness * 2.4 : 0;
+    }
   }
 
   /** Los edificios que quedan entre la cámara y el vehículo se vuelven casi transparentes. */
@@ -1101,7 +1231,27 @@ export class Renderer3D {
 
   draw() {
     if (this.lost) return;
-    this.renderer.render(this.scene, this.camera);
+    const { renderer, scene, camera } = this;
+    // 1) Mundo (con post-procesado si la calidad lo permite)
+    camera.layers.set(0);
+    if (this.postfx && QUALITY[this.quality].post) this.postfx.render(scene, camera, this.grading);
+    else renderer.render(scene, camera);
+    // 2) Etiquetas y pines encima, sin filtros (y sin volver a calcular las sombras).
+    // Sin fondo: si la escena tiene un color de fondo, Three.js borra la pantalla aunque autoClear
+    // esté desactivado, y se perdería todo lo pintado en el paso 1 (se veía la pantalla azul).
+    const background = scene.background;
+    scene.background = null;
+    camera.layers.set(OVERLAY_LAYER);
+    renderer.autoClear = false;
+    renderer.shadowMap.autoUpdate = false;
+    try {
+      renderer.render(scene, camera);
+    } finally {
+      renderer.shadowMap.autoUpdate = true;
+      renderer.autoClear = true;
+      scene.background = background;
+      camera.layers.set(0);
+    }
   }
 
   /** Datos de depuración para comprobar el rendimiento. */
@@ -1122,6 +1272,9 @@ export class Renderer3D {
     this.envTarget?.dispose();
     this.skyDome.geometry.dispose();
     this.skyDome.material.dispose();
+    this.cloudMaterial.dispose();
+    this.postfx?.dispose();
+    setBuildingEnvironment(null, 0);
     this.renderer.dispose();
   }
 }
