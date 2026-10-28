@@ -3,9 +3,10 @@
 // solo cuando un edificio tapa la vista se le asignan copias transparentes (ver setEntryFade).
 
 import * as THREE from '../vendor/three.module.js';
-import { BLOCK_PITCH, BLOCK_SIZE, BLOCKS_X, BLOCKS_Y, ROAD_WIDTH, TILE } from '../config/constants.js';
-import { ZONES, zoneIdForBlock } from '../config/zones.js';
+import { TILE } from '../config/constants.js';
+import { ZONES } from '../config/zones.js';
 import { createRng } from '../core/random.js';
+import { layoutLots } from '../world/cityMap.js';
 import {
   getAwningTexture, getHazardTexture, getWallTextures, makeCanvas, makeDepotRoofTexture, makeHelipadTexture, makeSignTexture, toTexture,
 } from './textures3d.js';
@@ -225,7 +226,8 @@ function buildOne(b, locked, extraTextures, decor = false) {
       // Parcela con jardín delantero: la casa se retira hacia el fondo y deja sitio a porche, camino y seto
       const h = 30;
       const roofH = 22;
-      const garage = variant % 2 === 0;
+      // Las parcelas estrechas (2 casillas) no tienen sitio para el garaje
+      const garage = variant % 2 === 0 && fw >= 80;
       const bw = garage ? fw * 0.6 : fw * 0.72;
       const bd = fd * 0.58;
       // Con garaje la casa se pega a un lado para que el garaje quepa en la parcela
@@ -512,14 +514,6 @@ export function segmentHitsBuilding(a, b, box, margin = 4) {
 // pero evitan que la ciudad termine en un campo vacío. Todo se fusiona en una malla por material.
 
 const OUTSKIRT_RINGS = 3;
-const OUT_LAYOUTS = {
-  quad: [
-    { dx: 0, dy: 0, w: 3, h: 3, door: 'top' }, { dx: 3, dy: 0, w: 3, h: 3, door: 'top' },
-    { dx: 0, dy: 3, w: 3, h: 3, door: 'bottom' }, { dx: 3, dy: 3, w: 3, h: 3, door: 'bottom' },
-  ],
-  stack: [{ dx: 0, dy: 0, w: 6, h: 3, door: 'top' }, { dx: 0, dy: 3, w: 6, h: 3, door: 'bottom' }],
-  single: [{ dx: 0, dy: 0, w: 6, h: 6, door: 'bottom' }],
-};
 const OUT_WEIGHTS = {
   residential: { quad: 80, park: 20 },
   downtown: { stack: 60, single: 40 },
@@ -631,13 +625,34 @@ export function buildOutskirts(city) {
   const meshes = [];
   const temporary = [];
   const trees = [];
-  const pitch = BLOCK_PITCH * TILE;
-  const size = BLOCK_SIZE * TILE;
-  const extent = OUTSKIRT_RINGS * pitch + 160;
   const W = city.widthPx;
   const H = city.heightPx;
   const R = OUTSKIRT_RINGS;
   let count = 0;
+
+  // Columnas y filas de manzanas: las de la ciudad más R anillos exteriores de 6 casillas con calles de 3
+  const OUT_BLOCK = 6;
+  const OUT_ROAD = 3;
+  const extend = (inner, start, size, key) => {
+    const before = [];
+    const after = [];
+    let cursor = 0;
+    for (let i = 0; i < R; i++) {
+      before.unshift({ [key]: cursor - OUT_BLOCK, [size]: OUT_BLOCK, outside: true, near: 0, road: { at: cursor - OUT_BLOCK - OUT_ROAD, w: OUT_ROAD } });
+      cursor -= OUT_BLOCK + OUT_ROAD;
+    }
+    cursor = start;
+    for (let i = 0; i < R; i++) {
+      after.push({ [key]: cursor, [size]: OUT_BLOCK, outside: true, near: inner.length - 1, road: { at: cursor + OUT_BLOCK, w: OUT_ROAD } });
+      cursor += OUT_BLOCK + OUT_ROAD;
+    }
+    return [...before, ...inner.map((item, i) => ({ ...item, outside: false, near: i })), ...after];
+  };
+  const extCols = extend(city.cols, city.width, 'w', 'x');
+  const extRows = extend(city.rows, city.height, 'h', 'y');
+  const extent = R * (OUT_BLOCK + OUT_ROAD) * TILE + 160;
+  // Bloques de la ciudad (por columna y fila) para saber qué zona tiene cerca cada manzana exterior
+  const innerZone = (c, r) => city.zoneIdAtTile(city.cols[c].x, city.rows[r].y);
 
   // Asfalto alrededor del mapa (cuatro franjas que no se solapan con el suelo del juego)
   const asphalt = new THREE.MeshLambertMaterial({ color: '#434a59' });
@@ -653,25 +668,29 @@ export function buildOutskirts(city) {
     meshes.push(placed(geometry, asphalt, cx, -0.3, cz));
   }
 
-  for (let br = -R; br < BLOCKS_Y + R; br++) {
-    for (let bc = -R; bc < BLOCKS_X + R; bc++) {
-      if (bc >= 0 && bc < BLOCKS_X && br >= 0 && br < BLOCKS_Y) continue;
-      const zoneId = zoneIdForBlock(Math.min(BLOCKS_X - 1, Math.max(0, bc)), Math.min(BLOCKS_Y - 1, Math.max(0, br)));
+  for (const row of extRows) {
+    for (const col of extCols) {
+      if (!col.outside && !row.outside) continue;
+      const zoneId = innerZone(col.near, row.near);
       const zone = ZONES[zoneId];
-      const ox = bc * BLOCK_PITCH + ROAD_WIDTH;
-      const oy = br * BLOCK_PITCH + ROAD_WIDTH;
+      const ox = col.x;
+      const oy = row.y;
+      const bw = col.w;
+      const bh = row.h;
       const x = ox * TILE;
       const z = oy * TILE;
+      const sw = bw * TILE;
+      const sh = bh * TILE;
       // Acera y suelo de la manzana
-      meshes.push(placed(unitBox, plain(zone.sidewalk), x + size / 2, 0.6, z + size / 2, size + 12, 1.2, size + 12));
+      meshes.push(placed(unitBox, plain(zone.sidewalk), x + sw / 2, 0.6, z + sh / 2, sw + 12, 1.2, sh + 12));
       const layoutId = pickWeighted(rng, OUT_WEIGHTS[zoneId]);
       if (layoutId === 'park') {
-        meshes.push(placed(unitBox, plain('#8ccf84'), x + size / 2, 0.75, z + size / 2, size - 4, 1.5, size - 4));
-        for (let i = 0; i < 12; i++) trees.push({ x: x + 20 + rng() * (size - 40), z: z + 20 + rng() * (size - 40), r: 9 + rng() * 7 });
+        meshes.push(placed(unitBox, plain('#8ccf84'), x + sw / 2, 0.75, z + sh / 2, sw - 4, 1.5, sh - 4));
+        for (let i = 0; i < 12; i++) trees.push({ x: x + 20 + rng() * (sw - 40), z: z + 20 + rng() * (sh - 40), r: 9 + rng() * 7 });
         continue;
       }
-      meshes.push(placed(unitBox, plain(zone.ground), x + size / 2, 0.75, z + size / 2, size, 1.5, size));
-      for (const rect of OUT_LAYOUTS[layoutId]) {
+      meshes.push(placed(unitBox, plain(zone.ground), x + sw / 2, 0.75, z + sh / 2, sw, 1.5, sh));
+      for (const rect of layoutLots(layoutId, bw, bh)) {
         const bx = (ox + rect.dx) * TILE;
         const by = (oy + rect.dy) * TILE;
         const pw = rect.w * TILE;
@@ -692,39 +711,59 @@ export function buildOutskirts(city) {
   const dashTexture = makeDashTexture();
   const dashMaterial = new THREE.MeshLambertMaterial({ map: dashTexture, transparent: true, alphaTest: 0.4, depthWrite: false });
   ownMaterials.push(dashMaterial);
-  const dashGeometry = new THREE.PlaneGeometry(size, 2.6).rotateX(-Math.PI / 2);
-  const dashUv = dashGeometry.attributes.uv;
-  for (let i = 0; i < dashUv.count; i++) dashUv.setXY(i, dashUv.getX(i) * (size / 30), dashUv.getY(i));
-  temporary.push(dashGeometry);
-  for (let k = -R; k <= BLOCKS_Y + R; k++) {
-    for (let c = -R; c < BLOCKS_X + R; c++) {
-      const roadInside = k >= 0 && k <= BLOCKS_Y && c >= 0 && c < BLOCKS_X;
-      if (roadInside) continue;
-      meshes.push(placed(dashGeometry, dashMaterial, (c * BLOCK_PITCH + ROAD_WIDTH) * TILE + size / 2, 0.05, (k * BLOCK_PITCH + ROAD_WIDTH / 2) * TILE));
+  // Geometría de línea central por longitud (las manzanas tienen tamaños distintos)
+  const dashGeometries = new Map();
+  const dashGeometry = (length) => {
+    let geometry = dashGeometries.get(length);
+    if (!geometry) {
+      geometry = new THREE.PlaneGeometry(length, 2.6).rotateX(-Math.PI / 2);
+      const uv = geometry.attributes.uv;
+      for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * (length / 30), uv.getY(i));
+      dashGeometries.set(length, geometry);
+      temporary.push(geometry);
+    }
+    return geometry;
+  };
+  // Calles horizontales exteriores: las de la ciudad que siguen hacia fuera y las de los anillos
+  const extHRoads = [...city.hRoads.map((r) => ({ at: r.y, w: r.w, inside: true })), ...extRows.filter((r) => r.outside).map((r) => ({ ...r.road, inside: false }))];
+  const extVRoads = [...city.vRoads.map((r) => ({ at: r.x, w: r.w, inside: true })), ...extCols.filter((c) => c.outside).map((c) => ({ ...c.road, inside: false }))];
+  for (const road of extHRoads) {
+    for (const col of extCols) {
+      if (road.inside && !col.outside) continue; // tramo dentro del mapa: lo dibuja el suelo del juego
+      const length = col.w * TILE;
+      meshes.push(placed(dashGeometry(length), dashMaterial, col.x * TILE + length / 2, 0.05, (road.at + road.w / 2) * TILE));
     }
   }
-  for (let k = -R; k <= BLOCKS_X + R; k++) {
-    for (let r = -R; r < BLOCKS_Y + R; r++) {
-      const roadInside = k >= 0 && k <= BLOCKS_X && r >= 0 && r < BLOCKS_Y;
-      if (roadInside) continue;
-      meshes.push(placed(dashGeometry, dashMaterial, (k * BLOCK_PITCH + ROAD_WIDTH / 2) * TILE, 0.05, (r * BLOCK_PITCH + ROAD_WIDTH) * TILE + size / 2, 1, 1, 1, Math.PI / 2));
+  for (const road of extVRoads) {
+    for (const row of extRows) {
+      if (road.inside && !row.outside) continue;
+      const length = row.h * TILE;
+      meshes.push(placed(dashGeometry(length), dashMaterial, (road.at + road.w / 2) * TILE, 0.05, row.y * TILE + length / 2, 1, 1, 1, Math.PI / 2));
     }
   }
   // Vallas donde las calles del mapa salían hacia las afueras: ahí termina la zona jugable
   const barrierMaterial = new THREE.MeshLambertMaterial({ map: getHazardTexture() });
   ownMaterials.push(barrierMaterial);
-  const roadLength = ROAD_WIDTH * TILE;
-  const barrierGeometry = repeatedBox(roadLength, 14, 6, roadLength / 14);
-  temporary.push(barrierGeometry);
-  for (let k = 0; k <= BLOCKS_Y; k++) {
-    const cz = (k * BLOCK_PITCH + ROAD_WIDTH / 2) * TILE;
-    meshes.push(placed(barrierGeometry, barrierMaterial, -3, 7, cz, 1, 1, 1, Math.PI / 2));
-    meshes.push(placed(barrierGeometry, barrierMaterial, W + 3, 7, cz, 1, 1, 1, Math.PI / 2));
+  const barrierGeometries = new Map();
+  const barrierGeometry = (tiles) => {
+    let geometry = barrierGeometries.get(tiles);
+    if (!geometry) {
+      const length = tiles * TILE;
+      geometry = repeatedBox(length, 14, 6, length / 14);
+      barrierGeometries.set(tiles, geometry);
+      temporary.push(geometry);
+    }
+    return geometry;
+  };
+  for (const road of city.hRoads) {
+    const cz = (road.y + road.w / 2) * TILE;
+    meshes.push(placed(barrierGeometry(road.w), barrierMaterial, -3, 7, cz, 1, 1, 1, Math.PI / 2));
+    meshes.push(placed(barrierGeometry(road.w), barrierMaterial, W + 3, 7, cz, 1, 1, 1, Math.PI / 2));
   }
-  for (let k = 0; k <= BLOCKS_X; k++) {
-    const cx = (k * BLOCK_PITCH + ROAD_WIDTH / 2) * TILE;
-    meshes.push(placed(barrierGeometry, barrierMaterial, cx, 7, -3));
-    meshes.push(placed(barrierGeometry, barrierMaterial, cx, 7, H + 3));
+  for (const road of city.vRoads) {
+    const cx = (road.x + road.w / 2) * TILE;
+    meshes.push(placed(barrierGeometry(road.w), barrierMaterial, cx, 7, -3));
+    meshes.push(placed(barrierGeometry(road.w), barrierMaterial, cx, 7, H + 3));
   }
 
   for (const mesh of mergeByMaterial(meshes)) {

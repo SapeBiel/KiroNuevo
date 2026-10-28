@@ -1,6 +1,6 @@
 // Estado serializable de la partida. Todo lo que hay aquí se guarda en localStorage.
 
-import { SAVE_VERSION, START_MONEY, START_REPUTATION } from '../config/constants.js';
+import { CITY_LAYOUT_VERSION, SAVE_VERSION, START_MONEY, START_REPUTATION } from '../config/constants.js';
 import { STARTER_VEHICLE } from '../config/vehicles.js';
 import { ZONE_ORDER } from '../config/zones.js';
 
@@ -14,6 +14,8 @@ export function createInitialState(city) {
   for (const id of ZONE_ORDER) zones[id] = id === 'residential';
   return {
     version: SAVE_VERSION,
+    citySeed: city.seed, // la ciudad se regenera igual al cargar
+    cityLayout: CITY_LAYOUT_VERSION,
     createdAt: Date.now(),
     time: 0,
     day: 1,

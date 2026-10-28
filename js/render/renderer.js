@@ -8,6 +8,7 @@ import { getVehicleType } from '../config/vehicles.js';
 import { clamp, distance, formatInt } from '../core/util.js';
 import { clockHour, darknessAt } from '../systems/dayCycle.js';
 import { getOrder } from '../systems/orders.js';
+import { getDrift, rearWheelPositions } from '../systems/playerVehicle.js';
 import { renderStaticMap, BUILDING_LIFT } from './mapLayer.js';
 import { drawVehicle, drawDrone, drawPin, drawOutlinedText, roundRect } from './sprites.js';
 import { Effects } from './effects.js';
@@ -67,6 +68,10 @@ export class Renderer {
       this.effects.ring(state.player.x, state.player.y, '#ffd166', 200);
     });
     events.on('upgradePurchased', () => this.effects.ring(state.player.x, state.player.y, '#4cc9f0', 90));
+    events.on('driftBoost', ({ level }) => {
+      this.effects.ring(state.player.x, state.player.y, '#fb8500', 70 + level * 25);
+      this.effects.text(state.player.x, state.player.y - 30, level >= 3 ? '¡SÚPER TURBO!' : 'TURBO', { color: '#ffd166', size: 16 + level * 2, life: 1 });
+    });
   }
 
   resize() {
@@ -145,6 +150,38 @@ export class Renderer {
       const bx = state.player.x - Math.cos(state.player.angle) * type.length * 0.55;
       const by = state.player.y - Math.sin(state.player.angle) * type.length * 0.55;
       if (type.shape !== 'electric') this.effects.smoke(bx, by, -Math.cos(state.player.angle) * 12, -Math.sin(state.player.angle) * 12);
+    }
+    this.updateDriftFx(dt);
+  }
+
+  /** Marcas de neumático y humo de las ruedas traseras al derrapar; chispas por el escape con turbo. */
+  updateDriftFx(dt) {
+    const { game } = this;
+    if (game.paused) return;
+    const drift = getDrift(game);
+    const p = game.state.player;
+    const type = getVehicleType(game.state.vehicles.find((v) => v.id === p.vehicleId).typeId);
+    if (drift.active) {
+      const wheels = rearWheelPositions(p, type);
+      const last = this.lastWheels;
+      if (!last || Math.hypot(wheels[0].x - last[0].x, wheels[0].y - last[0].y) > 6) {
+        if (last) for (let i = 0; i < 2; i++) this.effects.skid(last[i].x, last[i].y, wheels[i].x, wheels[i].y);
+        this.lastWheels = wheels;
+      }
+      this.driftSmokeTimer = (this.driftSmokeTimer ?? 0) - dt;
+      if (this.driftSmokeTimer <= 0) {
+        this.driftSmokeTimer = 0.05;
+        for (const w of wheels) this.effects.smoke(w.x, w.y, (Math.random() - 0.5) * 24, (Math.random() - 0.5) * 24);
+      }
+    } else {
+      this.lastWheels = null;
+    }
+    if (drift.boost > 0) {
+      this.boostTimer = (this.boostTimer ?? 0) - dt;
+      if (this.boostTimer <= 0) {
+        this.boostTimer = 0.06;
+        this.effects.sparks(p.x - Math.cos(p.angle) * type.length * 0.55, p.y - Math.sin(p.angle) * type.length * 0.55, 2);
+      }
     }
   }
 

@@ -1,13 +1,16 @@
-// Rutas por el centro de las calles (BFS sobre las casillas de la línea central).
+// Rutas por el centro de las calles (BFS sobre las casillas del eje de cada calle; ver city.isRoadNode).
 // Las usan repartidores automáticos y el cálculo de distancias de los pedidos.
 
-import { TILE, MAP_TILES_X, MAP_TILES_Y } from '../config/constants.js';
+import { TILE } from '../config/constants.js';
 import { distance } from '../core/util.js';
+
+const MAX_TREES = 64; // árboles de rutas en caché (cada uno ocupa dos arrays del tamaño del mapa)
 
 export function createPathService(city) {
   const trees = new Map();
   let treesVersion = -1;
-  const totalTiles = MAP_TILES_X * MAP_TILES_Y;
+  const MAP_TILES_X = city.width;
+  const totalTiles = city.width * city.height;
   const queue = new Int32Array(totalTiles);
 
   function ensureFresh() {
@@ -65,6 +68,8 @@ export function createPathService(city) {
     }
     tree = { dist, parent };
     trees.set(startIndex, tree);
+    // Se olvidan los más antiguos para no acumular memoria (el mapa ahora es más grande)
+    if (trees.size > MAX_TREES) trees.delete(trees.keys().next().value);
     return tree;
   }
 

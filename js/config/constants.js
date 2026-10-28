@@ -1,15 +1,12 @@
 // Constantes globales del juego. No dependen de DOM ni de canvas.
 
 export const TILE = 32; // tamaño de una casilla en píxeles
-export const ROAD_WIDTH = 3; // casillas de ancho de cada calle
-export const BLOCK_SIZE = 6; // casillas de lado de cada manzana
-export const BLOCK_PITCH = ROAD_WIDTH + BLOCK_SIZE; // separación entre calles
-export const BLOCKS_X = 8;
-export const BLOCKS_Y = 6;
-export const MAP_TILES_X = BLOCKS_X * BLOCK_PITCH + ROAD_WIDTH;
-export const MAP_TILES_Y = BLOCKS_Y * BLOCK_PITCH + ROAD_WIDTH;
-export const MAP_WIDTH_PX = MAP_TILES_X * TILE;
-export const MAP_HEIGHT_PX = MAP_TILES_Y * TILE;
+// La ciudad se genera con una semilla: manzanas y calles de tamaño variable (ver world/cityMap.js).
+// El tamaño real del mapa en casillas está en city.width / city.height.
+export const CITY_BLOCKS_X = 11; // columnas de manzanas
+export const CITY_BLOCKS_Y = 8; // filas de manzanas
+export const DEFAULT_CITY_SEED = 20240607; // semilla de las pruebas automáticas
+export const CITY_LAYOUT_VERSION = 2; // sube si cambia el generador: las partidas viejas se recolocan
 
 export const METERS_PER_TILE = 12; // para mostrar distancias en metros
 

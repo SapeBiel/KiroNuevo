@@ -6,6 +6,8 @@ import { createLabel, disposeSprite, scaleSpriteToScreen } from './textures3d.js
 const CONFETTI_COLORS = ['#ffb703', '#fb8500', '#4cc9f0', '#90be6d', '#f72585', '#ffffff'];
 const MAX_CONFETTI = 500;
 const MAX_SOFT = 320;
+const MAX_SKIDS = 360;
+const SKID_LIFE = 5;
 
 const POINT_VERTEX = `
 attribute vec4 aColor;
@@ -105,6 +107,19 @@ export class Effects3D {
     this.sparkCloud = new SoftPoints(MAX_SOFT, true);
     this.group.add(this.smokeCloud.points, this.sparkCloud.points);
 
+    // Marcas de neumático: tiras planas sobre el suelo (anillo circular de instancias)
+    this.skids = [];
+    this.skidGeometry = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2);
+    this.skidMaterial = new THREE.MeshBasicMaterial({
+      color: '#121418', transparent: true, opacity: 0.45, depthWrite: false,
+      polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3,
+    });
+    this.skidMesh = new THREE.InstancedMesh(this.skidGeometry, this.skidMaterial, MAX_SKIDS);
+    this.skidMesh.count = 0;
+    this.skidMesh.frustumCulled = false;
+    this.skidMesh.renderOrder = 1;
+    this.group.add(this.skidMesh);
+
     this.ringGeometry = new THREE.RingGeometry(0.88, 1, 56).rotateX(-Math.PI / 2);
     this.boxGeometry = new THREE.BoxGeometry(7, 7, 7);
     this.boxMaterial = new THREE.MeshLambertMaterial({ color: '#c99a62', emissive: '#3a2a14' });
@@ -175,6 +190,14 @@ export class Effects3D {
     this.boxes.push({ mesh, fromX, fromZ, getTarget, delay, life: 0.6, age: 0 });
   }
 
+  /** Tramo de marca de neumático entre dos puntos del suelo (coordenadas x/z). */
+  addSkid(x1, z1, x2, z2) {
+    const length = Math.hypot(x2 - x1, z2 - z1);
+    if (length < 0.5) return;
+    if (this.skids.length >= MAX_SKIDS) this.skids.shift();
+    this.skids.push({ x: (x1 + x2) / 2, z: (z1 + z2) / 2, angle: Math.atan2(z2 - z1, x2 - x1), length: length + 1.5, age: 0 });
+  }
+
   addShake(amount) {
     this.shake = Math.min(10, this.shake + amount);
   }
@@ -188,12 +211,29 @@ export class Effects3D {
     this.smokeCloud.material.uniforms.uScale.value = uScale;
     this.sparkCloud.material.uniforms.uScale.value = uScale;
 
+    this.updateSkids(dt);
     this.updateConfetti(dt);
     this.updateSmoke(dt);
     this.updateSparks(dt);
     this.updateTexts(dt, camera, viewHeight);
     this.updateRings(dt);
     this.updateBoxes(dt);
+  }
+
+  /** Las marcas se van estrechando hasta desaparecer (el material es común, así que no se puede variar la opacidad). */
+  updateSkids(dt) {
+    const { dummy, skidMesh } = this;
+    this.skids = this.skids.filter((s) => (s.age += dt) < SKID_LIFE);
+    this.skids.forEach((s, i) => {
+      const t = s.age / SKID_LIFE;
+      dummy.position.set(s.x, 0.7, s.z);
+      dummy.rotation.set(0, -s.angle, 0);
+      dummy.scale.set(s.length, 1, 3.2 * (1 - t * t));
+      dummy.updateMatrix();
+      skidMesh.setMatrixAt(i, dummy.matrix);
+    });
+    skidMesh.count = this.skids.length;
+    skidMesh.instanceMatrix.needsUpdate = true;
   }
 
   updateConfetti(dt) {
@@ -328,6 +368,8 @@ export class Effects3D {
   }
 
   clear() {
+    this.skids = [];
+    this.skidMesh.count = 0;
     this.confetti = [];
     this.smoke = [];
     this.sparks = [];
@@ -341,6 +383,9 @@ export class Effects3D {
 
   dispose() {
     this.clear();
+    this.skidGeometry.dispose();
+    this.skidMaterial.dispose();
+    this.skidMesh.dispose();
     this.confettiGeometry.dispose();
     this.confettiMesh.material.dispose();
     this.confettiMesh.dispose();

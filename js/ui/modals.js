@@ -70,6 +70,7 @@ export function welcomeHtml() {
     <div class="controls-grid">
       <div><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> o flechas <span>Conducir</span></div>
       <div><kbd>E</kbd> <span>Cargar y entregar</span></div>
+      <div><kbd>Espacio</kbd> <span>Derrapar al girar (suelta para turbo)</span></div>
       <div><kbd>1</kbd>–<kbd>5</kbd> <span>Abrir paneles</span></div>
       <div><kbd>V</kbd> <kbd>C</kbd> <span>Vista 3D / 2D y cámara</span></div>
       <div>Ratón / dedo <span>Mantén pulsado el mapa para ir hacia el puntero</span></div>
@@ -83,6 +84,7 @@ export function helpHtml() {
     <ol class="help-list">
       <li><b>Cargar:</b> ve al almacén (círculo amarillo) y pulsa <kbd>E</kbd>. Solo caben tantos paquetes como huecos tenga tu vehículo.</li>
       <li><b>Entregar:</b> ve al pin de color (con haz de luz y en el minimapa) hasta el círculo de entrega y pulsa <kbd>E</kbd>. Cobrarás al instante. En la vista del conductor te guía el Parcel Nav, y la mejora <i>Flecha guía</i> añade una flecha pequeña.</li>
+      <li><b>Derrape:</b> a buena velocidad, gira y mantén <kbd>Espacio</kbd>. Si derrapas más de medio segundo y sueltas sin chocar, ganas un turbo (cuanto más largo el derrape, más dura).</li>
       <li><b>Urgentes:</b> pagan más, pero tienen límite de tiempo. Si llegas tarde cobras menos, nunca pierdes dinero.</li>
       <li><b>Rachas:</b> encadena entregas a tiempo para ganar hasta un +32 % extra.</li>
       <li><b>Mejoras:</b> mejora tu vehículo, el almacén y la empresa. Cada mejora cambia de verdad el juego.</li>
@@ -92,7 +94,8 @@ export function helpHtml() {
     </ol>
     <div class="controls-grid">
       <div><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> / flechas <span>Conducir</span></div>
-      <div><kbd>E</kbd> / <kbd>Espacio</kbd> <span>Interactuar</span></div>
+      <div><kbd>E</kbd> <span>Interactuar (cargar y entregar)</span></div>
+      <div><kbd>Espacio</kbd> o <kbd>Mayús</kbd> <span>Derrapar (mantén pulsado mientras giras)</span></div>
       <div><kbd>1</kbd>–<kbd>5</kbd> <span>Pedidos, Mejoras, Equipo, Empresa, Logros</span></div>
       <div><kbd>M</kbd> <span>Sonido</span></div>
       <div><kbd>V</kbd> <span>Cambiar entre vista 3D y 2D</span></div>

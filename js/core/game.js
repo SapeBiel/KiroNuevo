@@ -3,11 +3,11 @@
 import { AUTOSAVE_INTERVAL, DEPOT_RADIUS, DROP_RADIUS } from '../config/constants.js';
 import { ORDER_KINDS } from '../config/packages.js';
 import { TUTORIAL_STEPS } from '../config/tutorial.js';
-import { createCity } from '../world/cityMap.js';
+import { createCity, randomCitySeed } from '../world/cityMap.js';
 import { createPathService } from '../world/pathfinding.js';
 import { EventBus } from './eventBus.js';
 import { createInitialState } from './state.js';
-import { loadState, saveState, clearSave } from './storage.js';
+import { loadState, saveState, clearSave, peekSavedCitySeed } from './storage.js';
 import { distance } from './util.js';
 import { computeStats, getPlayerVehicle, getVehicleStats } from '../systems/stats.js';
 import { updatePlayerVehicle } from '../systems/playerVehicle.js';
@@ -33,7 +33,7 @@ export class Game {
     this.persist = persist;
     this.resetting = false;
     this.paused = false;
-    this.controls = { throttle: 0, steer: 0 };
+    this.controls = { throttle: 0, steer: 0, drift: false };
     this.crashCooldown = 0;
     this.trackedOrderId = null;
     this.runtime = { clock: 0, incomeEvents: [], fuelDebt: 0, workers: {}, drones: {} };
@@ -48,9 +48,14 @@ export class Game {
     }
   }
 
-  /** Crea el juego cargando la partida guardada si existe y es válida. */
-  static create({ loadSave = true, persist = true } = {}) {
-    const city = createCity();
+  /**
+   * Crea el juego cargando la partida guardada si existe y es válida.
+   * La ciudad sale de la semilla guardada; una partida nueva estrena una ciudad aleatoria
+   * (o la semilla indicada, como hacen las pruebas).
+   */
+  static create({ loadSave = true, persist = true, seed = null } = {}) {
+    const savedSeed = loadSave ? peekSavedCitySeed() : null;
+    const city = createCity(seed ?? savedSeed ?? randomCitySeed());
     const saved = loadSave ? loadState(city) : null;
     const state = saved ?? createInitialState(city);
     const game = new Game({ city, state, persist });

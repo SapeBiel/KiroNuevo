@@ -337,6 +337,17 @@ body.has-touch #touch-controls, .coarse #touch-controls { display: block; }
 }
 .touch-btn.is-held { background: rgba(255, 183, 3, 0.7); }
 .touch-action { background: rgba(251, 133, 0, 0.8); }
+.touch-drift { background: rgba(76, 201, 240, 0.45); }
+/* Indicador de derrape y turbo (encima del botón de acción) */
+#drift-meter {
+  position: absolute; left: 50%; top: 14px; transform: translateX(-50%); min-width: 150px; padding: 5px 12px;
+  border-radius: 999px; background: rgba(11, 17, 32, 0.78); border: 1px solid var(--line); text-align: center;
+  font: 800 13px var(--font-display); color: #fff; pointer-events: none; opacity: 0; transition: opacity 0.15s ease;
+}
+#drift-meter.is-visible { opacity: 1; }
+#drift-meter .bar { margin-top: 4px; height: 5px; }
+#drift-meter .bar i { background: linear-gradient(90deg, #4cc9f0, #ffd166, #fb8500); transition: none; }
+#drift-meter.is-boost { border-color: #fb8500; color: #ffd166; }
 
 #toasts { position: absolute; top: 12px; right: 12px; width: min(330px, calc(100% - 24px)); display: flex; flex-direction: column; gap: 6px; pointer-events: none; z-index: 3; }
 .toast {

@@ -10,6 +10,7 @@ import { clockHour, formatClock } from '../systems/dayCycle.js';
 import { incomePerMinute } from '../systems/economy.js';
 import { cargoSlotsUsed, getOrder, playerCapacity } from '../systems/orders.js';
 import { $, bar, setHtml, setStyle, setText } from './dom.js';
+import { BOOST_MIN_TIME, getDrift } from '../systems/playerVehicle.js';
 
 export class Hud {
   constructor({ game, onInteract, onSkipTutorial, onAckTutorial }) {
@@ -22,6 +23,7 @@ export class Hud {
       orders: $('#hud-orders'), clock: $('#hud-clock'), clockIcon: $('#hud-clock-icon'), day: $('#hud-day'),
       dayBar: $('#hud-day-bar'), cargo: $('#cargo-card'), context: $('#context-action'), streak: $('#streak-chip'),
       tutorial: $('#tutorial-card'), contextLabel: $('#context-label'),
+      drift: $('#drift-meter'), driftLabel: $('#drift-label'), driftBar: $('#drift-bar'),
     };
     this.onSkipTutorial = onSkipTutorial;
     this.onAckTutorial = onAckTutorial;
@@ -48,11 +50,30 @@ export class Hud {
     this.el.context.classList.toggle('is-visible', show);
     if (show) setText(this.el.contextLabel, ctx.label);
     this.el.context.dataset.kind = ctx?.kind ?? '';
+    this.updateDrift();
 
     this.timer += dt;
     if (this.timer >= 0.2) {
       this.timer = 0;
       this.updateStatic();
+    }
+  }
+
+  /** Indicador de derrape: se llena hasta el turbo; durante el turbo muestra el tiempo que queda. */
+  updateDrift() {
+    const drift = getDrift(this.game);
+    const { drift: box, driftLabel, driftBar } = this.el;
+    if (!box) return;
+    const boosting = drift.boost > 0;
+    box.classList.toggle('is-visible', drift.active || boosting);
+    box.classList.toggle('is-boost', boosting && !drift.active);
+    if (drift.active) {
+      const ready = drift.time >= BOOST_MIN_TIME;
+      setText(driftLabel, ready ? `DERRAPE ${drift.time.toFixed(1)} s · ¡suelta para turbo!` : `DERRAPE ${drift.time.toFixed(1)} s`);
+      setStyle(driftBar, 'width', `${Math.min(100, (drift.time / 2) * 100).toFixed(1)}%`);
+    } else if (boosting) {
+      setText(driftLabel, '🔥 TURBO');
+      setStyle(driftBar, 'width', `${((drift.boost / (drift.boostTotal || 1)) * 100).toFixed(1)}%`);
     }
   }
 

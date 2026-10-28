@@ -23,12 +23,19 @@ python -m http.server 8080
 
 Después abre la dirección que indique el comando.
 
+## La ciudad
+
+Cada partida nueva genera una ciudad distinta a partir de una semilla aleatoria (se guarda con la partida, así que al cargarla vuelve la misma ciudad). Hay 11 × 8 manzanas de tamaños variados, calles de 2 a 4 casillas de ancho con una gran avenida en cada sentido, supermanzanas donde desaparece un tramo de calle (centros comerciales, naves, torres o grandes parques, que crean calles en T), plazas peatonales con fuente por las que se puede circular y nombres de calle barajados. Al reiniciar la partida sale una ciudad nueva.
+
+Las partidas guardadas con la versión anterior (ciudad fija) conservan el progreso, pero estrenan ciudad: sus pedidos en curso se descartan y la furgoneta vuelve al almacén.
+
 ## Controles
 
 | Acción | Teclas |
 | --- | --- |
 | Conducir | `W A S D` o flechas (también mantener pulsado el ratón/dedo sobre el mapa) |
-| Cargar en el almacén / entregar en destino | `E` (o `Espacio`, o el botón que aparece en pantalla) |
+| Cargar en el almacén / entregar en destino | `E` (o el botón que aparece en pantalla) |
+| Derrapar | Mantener `Espacio` (o `Mayús`) mientras giras a buena velocidad; al soltar tras más de medio segundo, turbo. En táctil, botón ⤿ |
 | Abrir paneles | `1` Pedidos · `2` Mejoras · `3` Equipo · `4` Empresa · `5` Logros |
 | Sonido | `M` |
 | Vista 3D / 2D | `V` |

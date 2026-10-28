@@ -1,12 +1,18 @@
 // Capa estática del mapa: calles, manzanas, edificios y zonas bloqueadas.
 // Se pinta una vez en un canvas fuera de pantalla y se vuelve a pintar al desbloquear zonas.
 
-import { TILE, BLOCK_PITCH, ROAD_WIDTH, BLOCK_SIZE, BLOCKS_X, BLOCKS_Y, MAP_TILES_X, MAP_TILES_Y } from '../config/constants.js';
-import { ZONES, HORIZONTAL_STREETS, VERTICAL_STREETS } from '../config/zones.js';
+import { TILE } from '../config/constants.js';
+import { ZONES } from '../config/zones.js';
 import { createRng } from '../core/random.js';
 import { roundRect, shade } from './sprites.js';
 
 export const STATIC_SCALE = 1.5;
+const MAX_CANVAS = 4096;
+
+/** Escala del mapa estático: 1,5 si cabe, menos en ciudades grandes (límite de memoria del canvas). */
+function staticScale(city, wanted = STATIC_SCALE) {
+  return Math.min(wanted, MAX_CANVAS / Math.max(city.widthPx, city.heightPx));
+}
 
 const ASPHALT = '#434a59';
 export const BUILDING_LIFT = { house: 8, villa: 9, apartment: 10, shop: 7, office: 12, tower: 20, factory: 9, warehouse: 8, depot: 10 };
@@ -15,15 +21,17 @@ const APARTMENT_ROOFS = ['#e3d5c6', '#d6dce8', '#e8d3d9', '#d8e4d2'];
 const AWNINGS = ['#e5484d', '#2a9d8f', '#f4a261', '#4c6ef5', '#c05299'];
 
 export function renderStaticMap(city) {
+  const scale = staticScale(city);
   const canvas = document.createElement('canvas');
-  canvas.width = Math.ceil(city.widthPx * STATIC_SCALE);
-  canvas.height = Math.ceil(city.heightPx * STATIC_SCALE);
+  canvas.width = Math.ceil(city.widthPx * scale);
+  canvas.height = Math.ceil(city.heightPx * scale);
   const ctx = canvas.getContext('2d');
-  ctx.scale(STATIC_SCALE, STATIC_SCALE);
+  ctx.scale(scale, scale);
 
   drawRoads(ctx, city);
   drawBlocks(ctx, city);
   drawRoadMarkings(ctx, city);
+  drawPlazas(ctx, city, true);
   for (const park of city.parks) drawPark(ctx, park);
   drawDepotLot(ctx, city.depot);
   const sorted = [...city.buildings, city.depot].sort((a, b) => a.y - b.y);
@@ -38,7 +46,8 @@ export function renderStaticMap(city) {
  * Suelo del mapa sin edificios, árboles ni farolas (para el modo 3D, que los modela en volumen).
  * Incluye calles, aceras, parques, aparcamiento del almacén, nombres de calle y zonas bloqueadas.
  */
-export function renderGroundMap(city, scale = STATIC_SCALE) {
+export function renderGroundMap(city, wantedScale = STATIC_SCALE) {
+  const scale = staticScale(city, wantedScale);
   const canvas = document.createElement('canvas');
   canvas.width = Math.ceil(city.widthPx * scale);
   canvas.height = Math.ceil(city.heightPx * scale);
@@ -48,6 +57,7 @@ export function renderGroundMap(city, scale = STATIC_SCALE) {
   drawRoads(ctx, city);
   drawBlocks(ctx, city);
   drawRoadMarkings(ctx, city);
+  drawPlazas(ctx, city, false); // en 3D la fuente es un modelo
   for (const park of city.parks) drawPark(ctx, park, false);
   drawDepotLot(ctx, city.depot);
   drawStreetNames(ctx, city);
@@ -60,10 +70,11 @@ function drawRoads(ctx, city) {
   ctx.fillRect(0, 0, city.widthPx, city.heightPx);
   // Textura sutil del asfalto
   const rng = createRng(77);
+  const count = Math.round((city.widthPx * city.heightPx) / 1100);
   ctx.fillStyle = 'rgba(255,255,255,0.025)';
-  for (let i = 0; i < 2600; i++) ctx.fillRect(rng() * city.widthPx, rng() * city.heightPx, 2 + rng() * 3, 2);
+  for (let i = 0; i < count; i++) ctx.fillRect(rng() * city.widthPx, rng() * city.heightPx, 2 + rng() * 3, 2);
   ctx.fillStyle = 'rgba(0,0,0,0.05)';
-  for (let i = 0; i < 2600; i++) ctx.fillRect(rng() * city.widthPx, rng() * city.heightPx, 2 + rng() * 3, 2);
+  for (let i = 0; i < count; i++) ctx.fillRect(rng() * city.widthPx, rng() * city.heightPx, 2 + rng() * 3, 2);
 }
 
 function drawBlocks(ctx, city) {
@@ -72,95 +83,134 @@ function drawBlocks(ctx, city) {
     const zone = ZONES[block.zoneId];
     const x = block.ox * TILE;
     const y = block.oy * TILE;
-    const size = BLOCK_SIZE * TILE;
+    const w = block.w * TILE;
+    const h = block.h * TILE;
     // Acera
-    ctx.fillStyle = shade(zone.sidewalk.replace('#', '#'), -8);
-    roundRect(ctx, x - 7, y - 7, size + 14, size + 14, 9);
+    ctx.fillStyle = shade(zone.sidewalk, -8);
+    roundRect(ctx, x - 7, y - 7, w + 14, h + 14, 9);
     ctx.fill();
     ctx.fillStyle = zone.sidewalk;
-    roundRect(ctx, x - 5, y - 5, size + 10, size + 10, 8);
+    roundRect(ctx, x - 5, y - 5, w + 10, h + 10, 8);
     ctx.fill();
+    if (block.kind === 'plaza') continue; // la plaza dibuja su propio pavimento
     // Suelo de la manzana
     ctx.fillStyle = zone.ground;
-    ctx.fillRect(x, y, size, size);
+    ctx.fillRect(x, y, w, h);
     if (block.zoneId === 'residential') {
       ctx.fillStyle = 'rgba(40,110,50,0.13)';
-      for (let i = 0; i < 70; i++) ctx.fillRect(x + rng() * size, y + rng() * size, 4, 3);
+      const spots = Math.round((w * h) / 520);
+      for (let i = 0; i < spots; i++) ctx.fillRect(x + rng() * w, y + rng() * h, 4, 3);
     }
   }
 }
 
+/** Líneas centrales en cada tramo de calle que existe y pasos de cebra en los cruces. */
 function drawRoadMarkings(ctx, city) {
-  const horizontalRoads = BLOCKS_Y + 1;
-  const verticalRoads = BLOCKS_X + 1;
+  const { vRoads, hRoads, cols, rows } = city;
   ctx.lineWidth = 2.5;
   ctx.strokeStyle = '#e9c46a';
   ctx.setLineDash([16, 14]);
-  for (let k = 0; k < horizontalRoads; k++) {
-    const y = (k * BLOCK_PITCH + ROAD_WIDTH / 2) * TILE;
-    for (let c = 0; c < BLOCKS_X; c++) {
-      const startX = (c * BLOCK_PITCH + ROAD_WIDTH) * TILE;
+  const centerLine = (x1, y1, x2, y2, double) => {
+    const offsets = double ? [-3.5, 3.5] : [0];
+    for (const o of offsets) {
       ctx.beginPath();
-      ctx.moveTo(startX, y);
-      ctx.lineTo(startX + BLOCK_SIZE * TILE, y);
+      if (y1 === y2) { ctx.moveTo(x1, y1 + o); ctx.lineTo(x2, y2 + o); } else { ctx.moveTo(x1 + o, y1); ctx.lineTo(x2 + o, y2); }
       ctx.stroke();
     }
-  }
-  for (let k = 0; k < verticalRoads; k++) {
-    const x = (k * BLOCK_PITCH + ROAD_WIDTH / 2) * TILE;
-    for (let r = 0; r < BLOCKS_Y; r++) {
-      const startY = r * BLOCK_PITCH * TILE + ROAD_WIDTH * TILE;
-      ctx.beginPath();
-      ctx.moveTo(x, startY);
-      ctx.lineTo(x, startY + BLOCK_SIZE * TILE);
-      ctx.stroke();
-    }
-  }
+  };
+  hRoads.forEach((road, j) => {
+    const y = (road.y + road.w / 2) * TILE;
+    cols.forEach((col, c) => {
+      if (city.segmentOpen.h(j, c)) centerLine(col.x * TILE, y, (col.x + col.w) * TILE, y, road.w >= 4);
+    });
+  });
+  vRoads.forEach((road, k) => {
+    const x = (road.x + road.w / 2) * TILE;
+    rows.forEach((row, r) => {
+      if (city.segmentOpen.v(k, r)) centerLine(x, row.y * TILE, x, (row.y + row.h) * TILE, road.w >= 4);
+    });
+  });
   ctx.setLineDash([]);
 
-  // Cruces: pasos de cebra en cada lado con calle
+  // Pasos de cebra: a cada lado del cruce por el que sigue la calle
   ctx.fillStyle = 'rgba(255,255,255,0.8)';
-  for (let r = 0; r <= BLOCKS_Y; r++) {
-    for (let c = 0; c <= BLOCKS_X; c++) {
-      const ix = c * BLOCK_PITCH * TILE;
-      const iy = r * BLOCK_PITCH * TILE;
-      const sq = ROAD_WIDTH * TILE;
-      const hasLeft = c > 0;
-      const hasRight = c < BLOCKS_X;
-      const hasUp = r > 0;
-      const hasDown = r < BLOCKS_Y;
-      for (let i = 0; i < 7; i++) {
-        const o = 7 + i * 12;
-        if (hasLeft) ctx.fillRect(ix - 16, iy + o, 10, 6);
-        if (hasRight) ctx.fillRect(ix + sq + 6, iy + o, 10, 6);
-        if (hasUp) ctx.fillRect(ix + o, iy - 16, 6, 10);
-        if (hasDown) ctx.fillRect(ix + o, iy + sq + 6, 6, 10);
+  vRoads.forEach((vr, k) => {
+    hRoads.forEach((hr, j) => {
+      const ix = vr.x * TILE;
+      const iy = hr.y * TILE;
+      const wv = vr.w * TILE;
+      const wh = hr.w * TILE;
+      const left = k > 0 && city.segmentOpen.h(j, k - 1);
+      const right = k < vRoads.length - 1 && city.segmentOpen.h(j, k);
+      const up = j > 0 && city.segmentOpen.v(k, j - 1);
+      const down = j < hRoads.length - 1 && city.segmentOpen.v(k, j);
+      for (let o = 7; o + 6 <= wh - 4; o += 12) {
+        if (left) ctx.fillRect(ix - 16, iy + o, 10, 6);
+        if (right) ctx.fillRect(ix + wv + 6, iy + o, 10, 6);
       }
+      for (let o = 7; o + 6 <= wv - 4; o += 12) {
+        if (up) ctx.fillRect(ix + o, iy - 16, 6, 10);
+        if (down) ctx.fillRect(ix + o, iy + wh + 6, 6, 10);
+      }
+    });
+  });
+}
+
+/** Plazas peatonales: adoquines, bancos y (en 2D) la fuente. */
+function drawPlazas(ctx, city, withFountain) {
+  for (const plaza of city.plazas ?? []) {
+    ctx.fillStyle = '#d8cdb6';
+    ctx.fillRect(plaza.x, plaza.y, plaza.pw, plaza.ph);
+    ctx.strokeStyle = 'rgba(120,100,70,0.18)';
+    ctx.lineWidth = 1;
+    for (let gx = plaza.x + 16; gx < plaza.x + plaza.pw; gx += 16) {
+      ctx.beginPath(); ctx.moveTo(gx, plaza.y); ctx.lineTo(gx, plaza.y + plaza.ph); ctx.stroke();
+    }
+    for (let gy = plaza.y + 16; gy < plaza.y + plaza.ph; gy += 16) {
+      ctx.beginPath(); ctx.moveTo(plaza.x, gy); ctx.lineTo(plaza.x + plaza.pw, gy); ctx.stroke();
+    }
+    const f = plaza.fountain;
+    // Círculo decorativo alrededor de la fuente
+    ctx.strokeStyle = 'rgba(150,120,80,0.45)';
+    ctx.lineWidth = 6;
+    ctx.beginPath();
+    ctx.arc(f.x, f.y, f.r + 26, 0, Math.PI * 2);
+    ctx.stroke();
+    if (withFountain) {
+      ctx.fillStyle = '#b9b2a4';
+      ctx.beginPath(); ctx.arc(f.x, f.y, f.r, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#6fb9d8';
+      ctx.beginPath(); ctx.arc(f.x, f.y, f.r - 5, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#e9f6fb';
+      ctx.beginPath(); ctx.arc(f.x, f.y, 4, 0, Math.PI * 2); ctx.fill();
     }
   }
 }
 
+/** Nombre de cada calle repetido cada dos manzanas, sobre los tramos que existen. */
 function drawStreetNames(ctx, city) {
   ctx.fillStyle = 'rgba(255,255,255,0.42)';
   ctx.font = '700 11px "Segoe UI",system-ui,sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  for (let k = 0; k <= BLOCKS_Y; k++) {
-    const y = (k * BLOCK_PITCH + ROAD_WIDTH / 2) * TILE + 14;
-    for (let c = 0; c < BLOCKS_X; c += 2) {
-      ctx.fillText(HORIZONTAL_STREETS[k].toUpperCase(), (c * BLOCK_PITCH + ROAD_WIDTH + BLOCK_SIZE / 2) * TILE, y);
-    }
-  }
-  for (let k = 0; k <= BLOCKS_X; k++) {
-    const x = (k * BLOCK_PITCH + ROAD_WIDTH / 2) * TILE + 14;
-    for (let r = 0; r < BLOCKS_Y; r += 2) {
+  city.hRoads.forEach((road, j) => {
+    const y = (road.y + road.w / 2) * TILE + Math.min(14, road.w * 5);
+    city.cols.forEach((col, c) => {
+      if (c % 2 || !city.segmentOpen.h(j, c)) return;
+      ctx.fillText(road.name.toUpperCase(), (col.x + col.w / 2) * TILE, y);
+    });
+  });
+  city.vRoads.forEach((road, k) => {
+    const x = (road.x + road.w / 2) * TILE + Math.min(14, road.w * 5);
+    city.rows.forEach((row, r) => {
+      if (r % 2 || !city.segmentOpen.v(k, r)) return;
       ctx.save();
-      ctx.translate(x, (r * BLOCK_PITCH + ROAD_WIDTH + BLOCK_SIZE / 2) * TILE);
+      ctx.translate(x, (row.y + row.h / 2) * TILE);
       ctx.rotate(-Math.PI / 2);
-      ctx.fillText(VERTICAL_STREETS[k].toUpperCase(), 0, 0);
+      ctx.fillText(road.name.toUpperCase(), 0, 0);
       ctx.restore();
-    }
-  }
+    });
+  });
 }
 
 function drawLampPosts(ctx, city) {
@@ -181,18 +231,20 @@ function drawLampPosts(ctx, city) {
 }
 
 function drawPark(ctx, park, withTrees = true) {
+  const pw = park.w ?? park.size;
+  const ph = park.h ?? park.size;
   ctx.fillStyle = '#8ccf84';
-  roundRect(ctx, park.x + 2, park.y + 2, park.size - 4, park.size - 4, 10);
+  roundRect(ctx, park.x + 2, park.y + 2, pw - 4, ph - 4, 10);
   ctx.fill();
-  // Caminos
+  // Caminos en diagonal
   ctx.strokeStyle = '#eadfc2';
   ctx.lineWidth = 9;
   ctx.lineCap = 'round';
   ctx.beginPath();
   ctx.moveTo(park.x + 14, park.y + 14);
-  ctx.lineTo(park.x + park.size - 14, park.y + park.size - 14);
-  ctx.moveTo(park.x + park.size - 14, park.y + 14);
-  ctx.lineTo(park.x + 14, park.y + park.size - 14);
+  ctx.lineTo(park.x + pw - 14, park.y + ph - 14);
+  ctx.moveTo(park.x + pw - 14, park.y + 14);
+  ctx.lineTo(park.x + 14, park.y + ph - 14);
   ctx.stroke();
   // Estanque
   ctx.fillStyle = '#6fb9d8';
@@ -523,6 +575,8 @@ function drawLockedZones(ctx, city) {
   hctx.lineWidth = 3;
   hctx.beginPath(); hctx.moveTo(-2, 18); hctx.lineTo(18, -2); hctx.stroke();
   const pattern = ctx.createPattern(hatch, 'repeat');
+  const MAP_TILES_X = city.width;
+  const MAP_TILES_Y = city.height;
 
   for (let ty = 0; ty < MAP_TILES_Y; ty++) {
     let runStart = -1;

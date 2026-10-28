@@ -1,6 +1,6 @@
 // Persistencia en localStorage con validación básica y tolerancia a datos corruptos.
 
-import { SAVE_KEY, SAVE_VERSION, SETTINGS_KEY } from '../config/constants.js';
+import { CITY_LAYOUT_VERSION, SAVE_KEY, SAVE_VERSION, SETTINGS_KEY } from '../config/constants.js';
 import { mergeDefaults } from './util.js';
 import { createInitialState } from './state.js';
 
@@ -38,7 +38,9 @@ export function loadState(city) {
   try {
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object' || parsed.version !== SAVE_VERSION) throw new Error('Versión de guardado incompatible');
-    const state = sanitizeState(mergeDefaults(createInitialState(city), parsed), city);
+    // ¿Se guardó en esta misma ciudad? (las partidas antiguas no tenían semilla: eran de la ciudad fija)
+    const sameCity = parsed.cityLayout === CITY_LAYOUT_VERSION && parsed.citySeed === city.seed;
+    const state = sanitizeState(mergeDefaults(createInitialState(city), parsed), city, sameCity);
     return state;
   } catch (error) {
     console.warn('Partida guardada inválida, se empieza de nuevo:', error);
@@ -56,6 +58,19 @@ export function clearSave() {
   } catch { /* nada que hacer */ }
 }
 
+/** Semilla de la ciudad de la partida guardada (null si no hay partida o es de un generador antiguo). */
+export function peekSavedCitySeed() {
+  try {
+    const raw = safeStorage()?.getItem(SAVE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (parsed?.version !== SAVE_VERSION || parsed.cityLayout !== CITY_LAYOUT_VERSION) return null;
+    return Number.isInteger(parsed.citySeed) ? parsed.citySeed : null;
+  } catch {
+    return null;
+  }
+}
+
 export function hasSave() {
   try {
     return Boolean(safeStorage()?.getItem(SAVE_KEY));
@@ -65,9 +80,21 @@ export function hasSave() {
 }
 
 /** Repara referencias rotas y reinicia tareas automáticas en curso (no se guardan a mitad de viaje). */
-export function sanitizeState(state, city) {
+export function sanitizeState(state, city, sameCity = true) {
   // Las zonas desbloqueadas deben estar activas antes de comprobar colisiones
   city.setUnlockedZones(state.zones);
+  // Partida de una ciudad con otro plano (versión anterior del juego): se conserva el progreso,
+  // pero los pedidos apuntaban a otros edificios y el vehículo vuelve a la salida del almacén
+  state.citySeed = city.seed;
+  state.cityLayout = CITY_LAYOUT_VERSION;
+  if (!sameCity) {
+    state.orders = [];
+    state.player.cargo = [];
+    state.player.x = city.depot.startX;
+    state.player.y = city.depot.startY;
+    state.player.angle = 0;
+    state.player.speed = 0;
+  }
   state.orders = state.orders.filter((o) => city.getBuilding(o.buildingId) && o.buildingId !== 'depot');
   const orderIds = new Set(state.orders.map((o) => o.id));
 

@@ -22,6 +22,7 @@ export class Sfx {
 
   setEnabled(value) {
     this.enabled = value;
+    if (!value) this.stopScreech();
   }
 
   tone(freq, duration, { type = 'sine', volume = 0.4, delay = 0, slideTo = null } = {}) {
@@ -58,8 +59,54 @@ export class Sfx {
     source.start();
   }
 
+  /** Chirrido de neumáticos en bucle (ruido filtrado) mientras dura el derrape. */
+  startScreech() {
+    if (!this.enabled || !this.context || this.screech) return;
+    const ctx = this.context;
+    const length = Math.floor(ctx.sampleRate * 0.5);
+    const buffer = ctx.createBuffer(1, length, ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < length; i++) data[i] = Math.random() * 2 - 1;
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.loop = true;
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.value = 1900;
+    filter.Q.value = 6;
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.16, ctx.currentTime + 0.08);
+    source.connect(filter);
+    filter.connect(gain);
+    gain.connect(this.master);
+    source.start();
+    this.screech = { source, gain, filter };
+  }
+
+  stopScreech() {
+    if (!this.screech || !this.context) return;
+    const { source, gain } = this.screech;
+    const now = this.context.currentTime;
+    gain.gain.cancelScheduledValues(now);
+    gain.gain.setValueAtTime(Math.max(0.0001, gain.gain.value), now);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.15);
+    source.stop(now + 0.2);
+    this.screech = null;
+  }
+
+  /** El chirrido sube de tono cuanto más cruzado va el vehículo (slip 0..1). */
+  setScreechIntensity(slip) {
+    if (!this.screech || !this.context) return;
+    this.screech.filter.frequency.setTargetAtTime(1500 + slip * 1400, this.context.currentTime, 0.05);
+  }
+
   play(name) {
     switch (name) {
+      case 'boost':
+        this.noise(0.35, 0.22);
+        this.tone(220, 0.4, { type: 'sawtooth', volume: 0.22, slideTo: 660 });
+        break;
       case 'click': this.tone(660, 0.06, { type: 'triangle', volume: 0.25 }); break;
       case 'load': this.tone(420, 0.09, { type: 'square', volume: 0.18 }); this.tone(640, 0.12, { type: 'square', volume: 0.18, delay: 0.08 }); break;
       case 'deliver':

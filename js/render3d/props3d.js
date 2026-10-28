@@ -1,7 +1,7 @@
 // Elementos de la ciudad que no son edificios: árboles de los parques, farolas y barreras de zonas bloqueadas.
 
 import * as THREE from '../vendor/three.module.js';
-import { MAP_TILES_X, MAP_TILES_Y, TILE } from '../config/constants.js';
+import { TILE } from '../config/constants.js';
 import { getGlowTexture, getHazardTexture } from './textures3d.js';
 
 const TREE_COLORS = ['#3f9a54', '#4aa85f', '#5bb86b', '#388a4c', '#6cbf6e'];
@@ -137,6 +137,8 @@ export function buildBarriers(city) {
   const alongX = [];
   const alongZ = [];
   const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+  const MAP_TILES_X = city.width;
+  const MAP_TILES_Y = city.height;
   for (let ty = 0; ty < MAP_TILES_Y; ty++) {
     for (let tx = 0; tx < MAP_TILES_X; tx++) {
       if (city.isZoneUnlocked(city.zoneIdAtTile(tx, ty)) || city.isSolidBuildingTile(tx, ty)) continue;
@@ -180,6 +182,45 @@ export function buildBarriers(city) {
     dispose() {
       for (const geometry of geometries) geometry.dispose();
       material.dispose();
+    },
+  };
+}
+
+/** Fuentes de las plazas peatonales: pilón de piedra, agua y surtidor central. */
+export function buildFountains(city) {
+  const group = new THREE.Group();
+  const plazas = city.plazas ?? [];
+  if (!plazas.length) return { group, dispose() {} };
+  const stone = new THREE.MeshLambertMaterial({ color: '#c9c1b2' });
+  const water = new THREE.MeshPhongMaterial({ color: '#3fb6e0', specular: '#ffffff', shininess: 90, emissive: '#0b3b52', emissiveIntensity: 0.35 });
+  const spray = new THREE.MeshBasicMaterial({ color: '#e9f6fb', transparent: true, opacity: 0.7, depthWrite: false });
+  const geometries = [];
+  for (const plaza of plazas) {
+    const { x, y, r } = plaza.fountain;
+    const basin = new THREE.CylinderGeometry(r, r, 8, 24);
+    const pool = new THREE.CylinderGeometry(r - 4, r - 4, 1, 24);
+    const column = new THREE.CylinderGeometry(3, 4, 20, 10);
+    const jet = new THREE.ConeGeometry(7, 16, 10, 1, true);
+    geometries.push(basin, pool, column, jet);
+    const add = (geometry, material, py) => {
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.position.set(x, py, y);
+      mesh.castShadow = material !== spray;
+      mesh.receiveShadow = true;
+      group.add(mesh);
+    };
+    add(basin, stone, 4);
+    add(pool, water, 7.6);
+    add(column, stone, 10);
+    add(jet, spray, 26);
+  }
+  return {
+    group,
+    dispose() {
+      for (const geometry of geometries) geometry.dispose();
+      stone.dispose();
+      water.dispose();
+      spray.dispose();
     },
   };
 }

@@ -5,7 +5,7 @@ import { Game } from '../js/core/game.js';
 import { createCity } from '../js/world/cityMap.js';
 import { createPathService } from '../js/world/pathfinding.js';
 import { saveState, loadState, clearSave } from '../js/core/storage.js';
-import { SAVE_KEY, TILE, DAY_LENGTH } from '../js/config/constants.js';
+import { SAVE_KEY, TILE, DAY_LENGTH, DEFAULT_CITY_SEED } from '../js/config/constants.js';
 import { ZONE_ORDER } from '../js/config/zones.js';
 import { UPGRADES } from '../js/config/upgrades.js';
 import { ACHIEVEMENTS } from '../js/config/achievements.js';
@@ -27,7 +27,8 @@ function assert(condition, message = 'Condición falsa') {
 const near = (a, b, tolerance, message) => assert(Math.abs(a - b) <= tolerance, `${message ?? 'Valores distintos'}: ${a} vs ${b}`);
 
 function fresh(overrides = {}) {
-  const game = Game.create({ loadSave: false, persist: false });
+  // Semilla fija: las pruebas usan siempre la misma ciudad
+  const game = Game.create({ loadSave: false, persist: false, seed: DEFAULT_CITY_SEED });
   game.state.tutorial.welcomed = true;
   Object.assign(game.state, overrides);
   game.recomputeStats();

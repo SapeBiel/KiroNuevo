@@ -6,7 +6,8 @@ const UP = ['KeyW', 'ArrowUp'];
 const DOWN = ['KeyS', 'ArrowDown'];
 const LEFT = ['KeyA', 'ArrowLeft'];
 const RIGHT = ['KeyD', 'ArrowRight'];
-const GAME_KEYS = new Set([...UP, ...DOWN, ...LEFT, ...RIGHT]);
+const DRIFT = ['Space', 'ShiftLeft', 'ShiftRight'];
+const GAME_KEYS = new Set([...UP, ...DOWN, ...LEFT, ...RIGHT, ...DRIFT]);
 
 export class Input {
   /** "canvas" puede ser un elemento o una lista (vista 2D y 3D); "renderer" debe tener screenToWorld(x, y). */
@@ -17,7 +18,7 @@ export class Input {
     this.actions = actions; // { interact, openTab, toggleMenu, toggleSound, toggleView, toggleCamera, closeTopLayer }
     this.enabled = true;
     this.keys = new Set();
-    this.virtual = { up: false, down: false, left: false, right: false };
+    this.virtual = { up: false, down: false, left: false, right: false, drift: false };
     this.pointer = { active: false, x: 0, y: 0 };
     this.bind();
   }
@@ -88,6 +89,9 @@ export class Input {
     }
     if (!this.enabled) return;
 
+    const focusIsButton = document.activeElement instanceof HTMLElement && ['BUTTON', 'A', 'SUMMARY'].includes(document.activeElement.tagName);
+    // Con el foco en un botón, Espacio lo pulsa (accesibilidad); si no, es el derrape
+    if (e.code === 'Space' && focusIsButton) return;
     if (GAME_KEYS.has(e.code)) {
       e.preventDefault();
       this.keys.add(e.code);
@@ -95,8 +99,7 @@ export class Input {
     }
     // Las acciones puntuales no se repiten al mantener la tecla pulsada
     if (e.repeat) return;
-    const focusIsButton = document.activeElement instanceof HTMLElement && ['BUTTON', 'A', 'SUMMARY'].includes(document.activeElement.tagName);
-    if (e.code === 'KeyE' || (e.code === 'Space' && !focusIsButton)) {
+    if (e.code === 'KeyE') {
       e.preventDefault();
       this.actions.interact();
     } else if (/^Digit[1-5]$/.test(e.code)) {
@@ -117,9 +120,12 @@ export class Input {
     let throttle = (has(UP) || this.virtual.up ? 1 : 0) - (has(DOWN) || this.virtual.down ? 1 : 0);
     let steer = (has(RIGHT) || this.virtual.right ? 1 : 0) - (has(LEFT) || this.virtual.left ? 1 : 0);
 
+    let drift = has(DRIFT) || this.virtual.drift;
+
     if (!this.enabled) {
       throttle = 0;
       steer = 0;
+      drift = false;
     } else if (throttle === 0 && steer === 0 && this.pointer.active) {
       // Conducción con ratón/dedo: el vehículo se dirige hacia el puntero (si apunta al cielo en 3D, no hace nada)
       const world = this.renderer.screenToWorld(this.pointer.x, this.pointer.y);
@@ -136,5 +142,6 @@ export class Input {
     }
     game.controls.throttle = throttle;
     game.controls.steer = steer;
+    game.controls.drift = drift;
   }
 }

@@ -13,9 +13,10 @@ import { getOrder } from '../systems/orders.js';
 import { renderGroundMap } from '../render/mapLayer.js';
 import { drawOutlinedText, roundRect } from '../render/sprites.js';
 import { buildCity, buildOutskirts, segmentHitsBuilding, updateEntryFade } from './buildings3d.js';
-import { buildBarriers, buildLamps, buildTrees } from './props3d.js';
+import { buildBarriers, buildFountains, buildLamps, buildTrees } from './props3d.js';
 import { createDroneModel, createVehicleModel, setVehicleEnvironment } from './vehicles3d.js';
 import { cargoSlotsUsed, playerCapacity } from '../systems/orders.js';
+import { getDrift, rearWheelPositions } from '../systems/playerVehicle.js';
 import { Effects3D } from './effects3d.js';
 import {
   PIN_ANCHOR_Y, PIN_ASPECT, createLabel, disposeSprite, getPinMaterial, getZoneTexture, makeCanvas, scaleSpriteToScreen,
@@ -304,12 +305,13 @@ export class Renderer3D {
     this.trees = buildTrees(city);
     this.lamps = buildLamps(city);
     this.barriers = buildBarriers(city);
+    this.fountains = buildFountains(city);
     // Las afueras no cambian al desbloquear zonas: se crean una sola vez
     if (!this.outskirts) {
       this.outskirts = buildOutskirts(city);
       this.scene.add(this.outskirts.group);
     }
-    this.world.add(this.cityHandle.group, this.trees.group, this.lamps.group, this.barriers.group);
+    this.world.add(this.cityHandle.group, this.trees.group, this.lamps.group, this.barriers.group, this.fountains.group);
     this.worldParts = { ground, outer };
 
     this.cityVersion = city.version;
@@ -324,6 +326,7 @@ export class Renderer3D {
     this.trees?.dispose();
     this.lamps?.dispose();
     this.barriers?.dispose();
+    this.fountains?.dispose();
     this.groundTexture?.dispose();
     this.worldParts.ground.geometry.dispose();
     this.worldParts.ground.material.dispose();
@@ -397,6 +400,11 @@ export class Renderer3D {
         fx.addRing(state.player.x, state.player.y, '#ffd166', 200);
       }),
       events.on('upgradePurchased', () => fx.addRing(state.player.x, state.player.y, '#4cc9f0', 90)),
+      events.on('driftBoost', ({ level }) => {
+        fx.addRing(state.player.x, state.player.y, '#fb8500', 70 + level * 25);
+        fx.addText(state.player.x, state.player.y, level >= 3 ? '¡SÚPER TURBO!' : 'TURBO', { color: '#ffd166', size: 16 + level * 2, life: 1, y: 40 });
+        fx.addShake(1.5);
+      }),
     ];
   }
 
@@ -579,6 +587,7 @@ export class Renderer3D {
     this.updateFades(dt);
     this.effects.update(dt, this.camera, this.cssH, this.pixelRatio);
     this.updateExhaust(dt);
+    this.updateDriftFx(dt);
   }
 
   updateEnvironment(hour, darkness) {
@@ -794,6 +803,44 @@ export class Renderer3D {
       clock: formatClock(game.state),
       target: nav,
     });
+  }
+
+  /** Marcas, humo de ruedas al derrapar, chispas por el escape y algo más de ángulo de cámara con turbo. */
+  updateDriftFx(dt) {
+    const { game } = this;
+    const drift = getDrift(game);
+    // Golpe de ángulo de visión durante el turbo (no en la cabina, que ya usa 70°)
+    const baseFov = this.cameraMode === 'driver' ? 70 : 52;
+    const targetFov = baseFov + (drift.boost > 0 ? 7 : 0);
+    if (Math.abs(this.camera.fov - targetFov) > 0.05) {
+      this.camera.fov += (targetFov - this.camera.fov) * (1 - Math.exp(-6 * dt));
+      this.camera.updateProjectionMatrix();
+    }
+    if (game.paused) return;
+    const p = game.state.player;
+    const type = getVehicleType(game.state.vehicles.find((v) => v.id === p.vehicleId).typeId);
+    if (drift.active) {
+      const wheels = rearWheelPositions(p, type);
+      const last = this.lastWheels;
+      if (!last || Math.hypot(wheels[0].x - last[0].x, wheels[0].y - last[0].y) > 5) {
+        if (last) for (let i = 0; i < 2; i++) this.effects.addSkid(last[i].x, last[i].y, wheels[i].x, wheels[i].y);
+        this.lastWheels = wheels;
+      }
+      this.driftSmokeTimer = (this.driftSmokeTimer ?? 0) - dt;
+      if (this.driftSmokeTimer <= 0) {
+        this.driftSmokeTimer = 0.045;
+        for (const w of wheels) this.effects.addSmoke(w.x, w.y, (Math.random() - 0.5) * 22, (Math.random() - 0.5) * 22);
+      }
+    } else {
+      this.lastWheels = null;
+    }
+    if (drift.boost > 0) {
+      this.boostTimer = (this.boostTimer ?? 0) - dt;
+      if (this.boostTimer <= 0) {
+        this.boostTimer = 0.05;
+        this.effects.addSparks(p.x - Math.cos(p.angle) * type.length * 0.55, p.y - Math.sin(p.angle) * type.length * 0.55, 2);
+      }
+    }
   }
 
   updateExhaust(dt) {

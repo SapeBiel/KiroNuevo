@@ -82,13 +82,16 @@ export const ZONE_REQUIRES = {
   metropolitan: 'downtown',
 };
 
-export const DEPOT_BLOCK = { bc: 1, br: 4 };
+/** Posición relativa (0..1) de la manzana del almacén dentro del mapa (zona residencial, abajo a la izquierda). */
+export const DEPOT_POSITION = { x: 1.5 / 8, y: 4.5 / 6 };
 
+/** Nombres para las calles horizontales y verticales (se barajan con la semilla de cada ciudad). */
 export const HORIZONTAL_STREETS = [
-  'Calle Mayor', 'Calle del Roble', 'Calle del Sol', 'Calle Luna',
-  'Calle del Río', 'Calle Olmo', 'Calle Cedro',
+  'Calle Mayor', 'Calle del Roble', 'Calle del Sol', 'Calle Luna', 'Calle del Río', 'Calle Olmo', 'Calle Cedro',
+  'Calle Jazmín', 'Calle de la Fuente', 'Calle Nogal', 'Calle del Molino', 'Calle Lirio', 'Calle de la Plata', 'Calle Romero',
 ];
 export const VERTICAL_STREETS = [
-  'Avenida Norte', 'Avenida del Parque', 'Avenida Central', 'Avenida Mar',
-  'Avenida Aurora', 'Avenida Real', 'Avenida del Puerto', 'Avenida Sur', 'Avenida Ancha',
+  'Avenida Norte', 'Avenida del Parque', 'Avenida Central', 'Avenida Mar', 'Avenida Aurora', 'Avenida Real',
+  'Avenida del Puerto', 'Avenida Sur', 'Avenida Ancha', 'Avenida del Prado', 'Avenida Estación', 'Avenida de la Vega',
+  'Avenida del Faro', 'Avenida Mirador',
 ];

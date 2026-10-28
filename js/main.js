@@ -15,6 +15,7 @@ import {
 } from './ui/modals.js';
 import { WORKER_TYPES } from './config/workers.js';
 import { MAX_WORKER_NAME } from './systems/workers.js';
+import { getDrift } from './systems/playerVehicle.js';
 import { Notifications } from './ui/notifications.js';
 import { initTooltip } from './ui/tooltip.js';
 import { $ } from './ui/dom.js';
@@ -43,7 +44,7 @@ function start() {
   const modals = new ModalManager($('#modal-root'), (count) => {
     game.paused = count > 0;
     if (input) input.enabled = count === 0;
-    if (count > 0) input?.releaseAll();
+    if (count > 0) { input?.releaseAll(); sfx.stopScreech(); }
   });
 
   const dock = new Dock({
@@ -276,6 +277,9 @@ function start() {
   events.on('achievementUnlocked', () => sfx.play('achievement'));
   events.on('missionCompleted', () => sfx.play('achievement'));
   events.on('crash', ({ impact }) => { if (impact > 70) sfx.play('crash'); });
+  events.on('driftStart', () => sfx.startScreech());
+  events.on('driftEnd', () => sfx.stopScreech());
+  events.on('driftBoost', () => sfx.play('boost'));
   events.on('tutorialStep', () => sfx.play('click'));
   events.on('daySummary', (summary) => openSummary(summary));
 
@@ -295,6 +299,8 @@ function start() {
     try {
       input.update();
       game.update(dt);
+      const drift = getDrift(game);
+      if (drift.active) sfx.setScreechIntensity(Math.min(1, Math.abs(drift.slip) / 0.9));
       view.update(dt);
       view.draw();
       hud.update(dt);

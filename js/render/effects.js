@@ -43,6 +43,11 @@ export class Effects {
     this.add({ type: 'text', x, y, vy: -rise, drag: 1.2, life, text, color, size, layer: 'air' });
   }
 
+  /** Marca de neumático: tramo oscuro sobre el asfalto que se desvanece. */
+  skid(x1, y1, x2, y2) {
+    this.add({ type: 'skid', x: x1, y: y1, x2, y2, life: 5, size: 3.2, layer: 'ground' });
+  }
+
   ring(x, y, color = '#ffffff', radius = 120) {
     this.add({ type: 'ring', x, y, life: 0.9, size: radius, color, layer: 'ground' });
   }
@@ -74,6 +79,7 @@ export class Effects {
         const k = Math.max(0, 1 - p.drag * dt);
         p.vx *= k; p.vy *= k;
       }
+      if (p.type === 'skid') continue; // las marcas no se mueven
       p.x += p.vx * dt;
       p.y += p.vy * dt;
       p.rotation += p.spin * dt;
@@ -94,6 +100,15 @@ export class Effects {
           ctx.fillStyle = p.color;
           ctx.fillRect(-p.size / 2, -p.size / 4, p.size, p.size / 2);
           ctx.restore();
+          break;
+        case 'skid':
+          ctx.strokeStyle = `rgba(18,20,26,${0.42 * (1 - t)})`;
+          ctx.lineWidth = p.size;
+          ctx.lineCap = 'round';
+          ctx.beginPath();
+          ctx.moveTo(p.x, p.y);
+          ctx.lineTo(p.x2, p.y2);
+          ctx.stroke();
           break;
         case 'smoke':
           ctx.fillStyle = `rgba(210,215,225,${0.32 * (1 - t)})`;

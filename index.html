@@ -70,6 +70,7 @@
       <div id="hud">
         <section id="cargo-card" aria-label="Carga del vehículo"></section>
         <div id="streak-chip" aria-live="polite"></div>
+        <div id="drift-meter" aria-hidden="true"><span id="drift-label">DERRAPE</span><div class="bar"><i id="drift-bar"></i></div></div>
         <canvas id="minimap" width="180" height="137" aria-label="Minimapa de la ciudad"></canvas>
         <button id="context-action" class="btn btn-primary btn-lg" aria-live="polite">
           <kbd>E</kbd> <span id="context-label">Interactuar</span>
@@ -83,6 +84,7 @@
           </div>
           <div class="touch-right">
             <button class="touch-btn touch-action" id="touch-interact" aria-label="Cargar o entregar">E</button>
+            <button class="touch-btn touch-drift" data-hold="drift" aria-label="Derrapar (mantener pulsado)">⤿</button>
             <button class="touch-btn" data-hold="down" aria-label="Frenar o marcha atrás">▼</button>
             <button class="touch-btn" data-hold="up" aria-label="Acelerar">▲</button>
           </div>
