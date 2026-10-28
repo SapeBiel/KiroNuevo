@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0e1424">
+  <title>Parcel Empire: Delivery Tycoon</title>
+  <meta name="description" content="Juego de gestión y reparto de paquetes: haz crecer tu empresa de mensajería hasta dirigir una red logística con empleados, camiones y drones.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23ffb703'/%3E%3Crect x='14' y='20' width='36' height='28' rx='3' fill='%23b9824a'/%3E%3Crect x='28' y='20' width='8' height='28' fill='%23e8c48e'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="css/style.css">
+  <script>
+    // Registro temprano de errores para poder comprobar que la página carga sin fallos.
+    window.__errors = [];
+    window.addEventListener('error', function (e) { window.__errors.push(String(e.message)); });
+    window.addEventListener('unhandledrejection', function (e) { window.__errors.push('Promise: ' + String(e.reason)); });
+  </script>
+</head>
+<body>
+  <div id="app">
+    <header id="topbar">
+      <div class="brand">
+        <svg class="brand-logo" viewBox="0 0 48 48" aria-hidden="true">
+          <rect width="48" height="48" rx="12" fill="#ffb703"/>
+          <path d="M10 18l14-7 14 7v14l-14 7-14-7z" fill="#b9824a" stroke="#6b4423" stroke-width="2" stroke-linejoin="round"/>
+          <path d="M10 18l14 7 14-7M24 25v14" stroke="#e8c48e" stroke-width="3" fill="none"/>
+        </svg>
+        <div class="brand-text"><b>Parcel Empire</b><small>Delivery Tycoon</small></div>
+      </div>
+
+      <div class="stats" role="list">
+        <div class="stat stat-money" role="listitem" data-tip="Dinero disponible. Ganas con las entregas y lo inviertes en mejoras.">
+          <span class="stat-icon" aria-hidden="true">💶</span>
+          <div><b id="hud-money">0 €</b><small id="hud-income" data-tip="Ingresos por minuto (media del último minuto)">0 €/min</small></div>
+        </div>
+        <div class="stat stat-level" role="listitem" data-tip="Nivel de empresa. Cada entrega da experiencia y desbloquea mejoras, vehículos y zonas.">
+          <span class="level-badge" id="hud-level">1</span>
+          <div class="stat-grow"><b id="hud-title">Repartidor novato</b>
+            <div class="bar bar-xp"><i id="hud-xp-bar"></i></div>
+            <small id="hud-xp-text">0/28 XP</small></div>
+        </div>
+        <div class="stat stat-rep" role="listitem" data-tip="Reputación (0-100): aumenta la recompensa hasta un +40 % y acelera la llegada de pedidos.">
+          <span class="stat-icon" aria-hidden="true">⭐</span>
+          <div class="stat-grow"><b id="hud-rep">30</b><div class="bar bar-rep"><i id="hud-rep-bar"></i></div><small>Reputación</small></div>
+        </div>
+        <div class="stat stat-orders" role="listitem" data-tip="Pedidos activos / máximo simultáneo">
+          <span class="stat-icon" aria-hidden="true">📦</span>
+          <div><b id="hud-orders">0/2</b><small>Pedidos</small></div>
+        </div>
+        <div class="stat stat-clock" role="listitem" data-tip="Hora y día de actividad de la empresa. Al final de cada jornada se pagan sueldos y mantenimiento.">
+          <span class="stat-icon" id="hud-clock-icon" aria-hidden="true">☀️</span>
+          <div class="stat-grow"><b id="hud-clock">06:00</b><div class="bar bar-day"><i id="hud-day-bar"></i></div><small id="hud-day">Día 1</small></div>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button class="icon-btn" id="btn-camera" aria-label="Cambiar cámara" data-tip="Cambiar cámara (C): exterior, conductor o aérea" hidden>🎥</button>
+        <button class="icon-btn" id="btn-view" aria-label="Cambiar a vista 3D" data-tip="Cambiar a vista 3D (V)">3D</button>
+        <button class="icon-btn" id="btn-sound" aria-label="Desactivar sonido" data-tip="Sonido (M)">🔊</button>
+        <button class="icon-btn" id="btn-help" aria-label="Cómo se juega" data-tip="Cómo se juega">❓</button>
+        <button class="btn" id="btn-menu" data-tip="Menú y pausa (P)">☰ Menú</button>
+      </div>
+    </header>
+
+    <main id="stage">
+      <canvas id="game-canvas" tabindex="0" role="img"
+        aria-label="Mapa de la ciudad. Conduce con WASD o las flechas, carga y entrega paquetes con la tecla E."></canvas>
+      <canvas id="game-canvas-3d" tabindex="0" role="img" hidden
+        aria-label="Vista 3D de la ciudad. Conduce con WASD o las flechas, carga y entrega paquetes con la tecla E."></canvas>
+
+      <div id="hud">
+        <section id="cargo-card" aria-label="Carga del vehículo"></section>
+        <div id="streak-chip" aria-live="polite"></div>
+        <canvas id="minimap" width="180" height="137" aria-label="Minimapa de la ciudad"></canvas>
+        <button id="context-action" class="btn btn-primary btn-lg" aria-live="polite">
+          <kbd>E</kbd> <span id="context-label">Interactuar</span>
+        </button>
+        <section id="tutorial-card" aria-label="Tutorial"></section>
+
+        <div id="touch-controls" aria-hidden="false">
+          <div class="touch-left">
+            <button class="touch-btn" data-hold="left" aria-label="Girar a la izquierda">◀</button>
+            <button class="touch-btn" data-hold="right" aria-label="Girar a la derecha">▶</button>
+          </div>
+          <div class="touch-right">
+            <button class="touch-btn touch-action" id="touch-interact" aria-label="Cargar o entregar">E</button>
+            <button class="touch-btn" data-hold="down" aria-label="Frenar o marcha atrás">▼</button>
+            <button class="touch-btn" data-hold="up" aria-label="Acelerar">▲</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="toasts" role="status" aria-live="polite"></div>
+      <div id="banner-root"></div>
+    </main>
+
+    <aside id="dock" aria-label="Paneles de gestión">
+      <nav id="dock-tabs" role="tablist" aria-label="Paneles"></nav>
+      <section id="dock-panel" role="tabpanel" tabindex="-1"></section>
+    </aside>
+  </div>
+
+  <div id="modal-root"></div>
+  <div id="tooltip" role="tooltip"></div>
+
+  <noscript><p style="padding:2rem;font-family:sans-serif">Este juego necesita JavaScript activado.</p></noscript>
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
