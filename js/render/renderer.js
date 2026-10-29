@@ -14,12 +14,13 @@ import { getCompany } from '../systems/branding.js';
 import { renderStaticMap, BUILDING_LIFT } from './mapLayer.js';
 import { drawVehicle, drawDrone, drawPin, drawOutlinedText, roundRect, shade } from './sprites.js';
 import { getShelf, productInfo } from '../config/products.js';
-import { BELT_SPEED, BELT_WIDTH, DOOR_HALF, depotLayout, isInsideDepot } from '../world/depotLayout.js';
+import { BELT_SPEED, BELT_WIDTH, depotLayout, isInsideDepot } from '../world/depotLayout.js';
 import { deliveryDoorPoint } from '../world/lotLayout.js';
 import { nearestLockedZone, signOpacity, signPosition } from '../world/zoneBorder.js';
-import { parkedVehicles, WALKER_RADIUS } from '../systems/onFoot.js';
+import { parkedVehicles, vehicleOnRoad, WALKER_RADIUS } from '../systems/onFoot.js';
 import { DOOR_RADIUS, beltItems, heldBox, heldItems, itemsAt, rackBoxes } from '../systems/handling.js';
 import { pickerLoad, pickersOf } from '../systems/warehouseStaff.js';
+import { courierLoad, reservedOnRack } from '../systems/workers.js';
 import { Effects } from './effects.js';
 import { drawMinimap } from './minimap.js';
 
@@ -405,10 +406,11 @@ export class Renderer {
     ctx.save();
     rectFill(o, '#7d7666');
     rectFill(i, '#d8d2c4');
-    // Puerta peatonal y barandilla amarilla de la fachada
+    // Fachada abierta (sin valla): el suelo sigue hasta fuera, con una línea amarilla en el borde
     ctx.fillStyle = '#d8d2c4';
-    ctx.fillRect(L.doorX - DOOR_HALF, i.y1, DOOR_HALF * 2, o.y1 - i.y1 + 1);
-    for (const wall of L.walls) if (wall.railing) rectFill(wall, '#ffb703');
+    ctx.fillRect(i.x0, i.y1, i.x1 - i.x0, o.y1 - i.y1 + 1);
+    ctx.fillStyle = '#ffb703';
+    ctx.fillRect(i.x0, o.y1 - 0.8, i.x1 - i.x0, 0.8);
     // Marcas del suelo alrededor de la mesa
     const t = L.table.rect;
     ctx.strokeStyle = 'rgba(232,160,0,0.7)';
@@ -509,7 +511,7 @@ export class Renderer {
     // Expedición con las cajas listas
     const rack = L.rack.rect;
     rectFill(rack, '#59606e');
-    rackBoxes(state).slice(0, 7).forEach((order, k) => {
+    [...rackBoxes(state), ...reservedOnRack(game)].slice(0, 7).forEach((order, k) => {
       ctx.fillStyle = '#c99a62';
       ctx.fillRect(rack.x0 + 2, rack.y0 + 2 + k * 5.6, rack.x1 - rack.x0 - 4, 4.6);
       ctx.fillStyle = ORDER_KINDS[order.kind].color;
@@ -604,11 +606,33 @@ export class Renderer {
     for (const worker of state.workers) {
       const rt = game.runtime.workers[worker.id];
       const vehicle = state.vehicles.find((v) => v.id === worker.vehicleId);
-      if (!rt || !vehicle || rt.phase === 'idle') continue;
-      if (!this.inView(rt.x, rt.y)) continue;
-      const look = this.livery(getVehicleType(vehicle.typeId));
-      drawVehicle(ctx, look.type, rt.x, rt.y, rt.angle, { lightsOn: darkness > 0.4, stripe: look.stripe });
-      drawOutlinedText(ctx, worker.name, rt.x, rt.y - 26, { size: 10, color: '#c9f7e4' });
+      if (!rt || !vehicle) continue;
+      if (vehicleOnRoad(rt) && this.inView(rt.x, rt.y)) {
+        const look = this.livery(getVehicleType(vehicle.typeId));
+        drawVehicle(ctx, look.type, rt.x, rt.y, rt.angle, { lightsOn: darkness > 0.4, stripe: look.stripe });
+        if (!rt.walker) drawOutlinedText(ctx, worker.name, rt.x, rt.y - 26, { size: 10, color: '#c9f7e4' });
+      }
+      // A pie: con la caja en las manos por el almacén o hasta la puerta del cliente
+      const w = rt.walker;
+      if (!w || !this.inView(w.x, w.y)) continue;
+      const fx = Math.cos(w.yaw);
+      const fy = Math.sin(w.yaw);
+      ctx.fillStyle = '#3a86ff';
+      ctx.strokeStyle = 'rgba(10,15,30,0.85)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.ellipse(w.x, w.y, 4.5, 3.4, w.yaw + Math.PI / 2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = '#e0ac69';
+      ctx.beginPath();
+      ctx.arc(w.x + fx * 0.8, w.y + fy * 0.8, 2.2, 0, Math.PI * 2);
+      ctx.fill();
+      if (courierLoad(game, worker).length) {
+        ctx.fillStyle = '#c99a62';
+        ctx.fillRect(w.x + fx * 6 - 3, w.y + fy * 6 - 3, 6, 6);
+      }
+      drawOutlinedText(ctx, worker.name.split(' ')[0], w.x, w.y - 9, { size: 7, color: '#c9f7e4' });
     }
   }
 
@@ -731,7 +755,7 @@ export class Renderer {
     // Faros solo al volante; a pie, una linterna
     if (!game.onFoot) light(p.x + Math.cos(p.angle) * 85, p.y + Math.sin(p.angle) * 85, 120, 0.95);
     else light(p.foot.x + Math.cos(p.foot.yaw) * 30, p.foot.y + Math.sin(p.foot.yaw) * 30, 55, 0.85);
-    for (const rt of Object.values(game.runtime.workers)) if (rt.phase !== 'idle') light(rt.x + Math.cos(rt.angle) * 50, rt.y + Math.sin(rt.angle) * 50, 80, 0.8);
+    for (const rt of Object.values(game.runtime.workers)) if (vehicleOnRoad(rt)) light(rt.x + Math.cos(rt.angle) * 50, rt.y + Math.sin(rt.angle) * 50, 80, 0.8);
     for (const rt of Object.values(game.runtime.drones)) if (rt.phase !== 'idle' && rt.phase !== 'charging') light(rt.x, rt.y, 55, 0.7);
 
     ctx.setTransform(1, 0, 0, 1, 0, 0);

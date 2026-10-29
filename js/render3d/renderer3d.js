@@ -14,7 +14,7 @@ import { getBrokenLamps, lampPose } from '../systems/streetLamps.js';
 import { renderGroundMap } from '../render/mapLayer.js';
 import { drawOutlinedText, roundRect } from '../render/sprites.js';
 import { buildCity, buildOutskirts, segmentHitsBuilding, updateEntryFade } from './buildings3d.js';
-import { buildBarriers, buildFountains, buildLamps, buildTrees } from './props3d.js';
+import { buildBarriers, buildFountains, buildLamps, buildStreetFurniture, buildTrees } from './props3d.js';
 import { createDroneModel, createVehicleModel, setVehicleBranding, setVehicleEnvironment } from './vehicles3d.js';
 import { getCompany } from '../systems/branding.js';
 import { cargoSlotsUsed, playerCapacity } from '../systems/orders.js';
@@ -29,10 +29,15 @@ import { setBuildingEnvironment } from './buildings3d.js';
 import { buildDepotInterior } from './depotInterior3d.js';
 import { boxSizeFor, productInfo } from '../config/products.js';
 import { createBoxModel, createProductModel } from './products3d.js';
-import { EYE_HEIGHT, parkedVehicles } from '../systems/onFoot.js';
+import { EYE_HEIGHT, parkedVehicles, vehicleOnRoad } from '../systems/onFoot.js';
+import { courierLoad } from '../systems/workers.js';
+import { createCharacter } from './characters3d.js';
+import { addDetailMap, groundGrainTexture, setSurfaceEnvironment } from './materials3d.js';
+import { roundedBoxGeometry } from './geometries3d.js';
 import { DOOR_RADIUS, heldBox, heldItems } from '../systems/handling.js';
 import { deliveryDoorPoint } from '../world/lotLayout.js';
 import { nearestLockedZone, signOpacity, signPosition } from '../world/zoneBorder.js';
+import { isInsideDepot } from '../world/depotLayout.js';
 
 /**
  * Niveles de calidad: alta = post-procesado con brillo, sombras finas y resolución completa;
@@ -46,9 +51,10 @@ export const QUALITY = {
 
 // Corrección de color por momento del día (día, atardecer, noche)
 const GRADING = {
-  exposure: [0.95, 1.0, 1.28],
-  saturation: [1.12, 1.18, 0.96],
-  contrast: [1.06, 1.05, 1.08],
+  // Algo menos saturado y con un poco más de contraste: aspecto de simulador, no de dibujo animado
+  exposure: [0.97, 1.0, 1.28],
+  saturation: [1.03, 1.1, 0.94],
+  contrast: [1.09, 1.07, 1.1],
   tint: [[1.02, 1.0, 0.97], [1.08, 0.96, 0.86], [0.86, 0.94, 1.12]],
   vignette: [0.24, 0.3, 0.38],
   bloomStrength: [0.35, 0.7, 1.25],
@@ -165,6 +171,7 @@ export class Renderer3D {
     this.markerLayer = new THREE.Group();
     this.scene.add(this.vehicleLayer, this.pinLayer, this.markerLayer);
     this.vehicles = new Map();
+    this.couriers = new Map(); // repartidores a pie: personaje y cajas en las manos
     this.drones = new Map();
     this.pins = new Map();
     this.markers = new Map();
@@ -193,8 +200,9 @@ export class Renderer3D {
     this.sun.shadow.mapSize.set(2048, 2048);
     const cam = this.sun.shadow.camera;
     cam.left = -340; cam.right = 340; cam.top = 340; cam.bottom = -340; cam.near = 10; cam.far = 2200;
-    this.sun.shadow.bias = -0.0004;
-    this.sun.shadow.normalBias = 0.6;
+    this.sun.shadow.bias = -0.0003;
+    this.sun.shadow.normalBias = 0.5;
+    this.sun.shadow.radius = 3; // bordes de sombra algo más suaves con PCF
     this.scene.add(this.hemi, this.sun, this.sun.target);
 
     this.headlight = new THREE.SpotLight('#fff3c8', 0, 380, 0.55, 0.6, 0);
@@ -380,6 +388,7 @@ export class Renderer3D {
       material.dispose();
       setVehicleEnvironment(this.envTarget.texture, 0.7);
       setBuildingEnvironment(this.envTarget.texture, 0.8);
+      setSurfaceEnvironment(this.envTarget.texture, 0.55);
     } catch (error) {
       console.warn('Sin reflejos de entorno:', error);
       this.envTarget = null;
@@ -411,10 +420,10 @@ export class Renderer3D {
     const maxTexture = this.renderer.capabilities.maxTextureSize;
     const scale = Math.min(1.5, maxTexture / Math.max(city.widthPx, city.heightPx));
     this.groundTexture = toTexture(renderGroundMap(city, scale));
-    const ground = new THREE.Mesh(
-      new THREE.PlaneGeometry(city.widthPx, city.heightPx).rotateX(-Math.PI / 2),
-      new THREE.MeshLambertMaterial({ map: this.groundTexture }),
-    );
+    // Grano fino repetido cada 90 px encima del mapa del suelo (asfalto y aceras no se ven lisos de cerca)
+    const groundMaterial = addDetailMap(new THREE.MeshLambertMaterial({ map: this.groundTexture }), groundGrainTexture(),
+      [city.widthPx / 90, city.heightPx / 90], 0.4);
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(city.widthPx, city.heightPx).rotateX(-Math.PI / 2), groundMaterial);
     ground.position.set(city.widthPx / 2, 0, city.heightPx / 2);
     ground.receiveShadow = true;
     this.world.add(ground);
@@ -430,13 +439,15 @@ export class Renderer3D {
     this.lamps = buildLamps(city);
     this.barriers = buildBarriers(city);
     this.fountains = buildFountains(city);
+    this.furniture = buildStreetFurniture(city);
     // Las afueras no cambian al desbloquear zonas: se crean una sola vez
     if (!this.outskirts) {
       this.outskirts = buildOutskirts(city);
       this.scene.add(this.outskirts.group);
     }
     this.depotInterior = buildDepotInterior(city.depot);
-    this.world.add(this.cityHandle.group, this.trees.group, this.lamps.group, this.barriers.group, this.fountains.group, this.depotInterior.group);
+    this.world.add(this.cityHandle.group, this.trees.group, this.lamps.group, this.barriers.group, this.fountains.group, this.furniture.group,
+      this.depotInterior.group);
     this.worldParts = { ground, outer };
 
     this.cityVersion = city.version;
@@ -452,6 +463,7 @@ export class Renderer3D {
     this.lamps?.dispose();
     this.barriers?.dispose();
     this.fountains?.dispose();
+    this.furniture?.dispose();
     this.depotInterior?.dispose();
     this.groundTexture?.dispose();
     this.worldParts.ground.geometry.dispose();
@@ -641,6 +653,57 @@ export class Renderer3D {
     this.viewModel = { group, key: '', models: [] };
     this.camera.add(group);
     this.scene.add(this.camera); // la cámara debe estar en la escena para que se dibujen sus hijos
+    // Piezas compartidas de las manos con guantes (se reutilizan cada vez que cambia lo que se lleva)
+    const finger = new THREE.CapsuleGeometry(0.24, 1.1, 3, 8).rotateX(Math.PI / 2);
+    this.handKit = {
+      palm: roundedBoxGeometry(0.3, 2),
+      finger,
+      arm: new THREE.CylinderGeometry(1, 1, 1, 12, 1, true).translate(0, 0.5, 0),
+      glove: new THREE.MeshStandardMaterial({ color: '#3a3f47', roughness: 0.85 }),
+      cuff: new THREE.MeshStandardMaterial({ color: '#2b3038', roughness: 0.9 }),
+      sleeve: new THREE.MeshStandardMaterial({ color: '#2f4a7a', roughness: 0.9, side: THREE.DoubleSide }),
+    };
+  }
+
+  /**
+   * Mano con guante y antebrazo que sujeta lo que se lleva. Marco de la mano: +x hacia el objeto, y arriba,
+   * -z hacia delante; el origen va pegado a la superficie del objeto. side = +1 derecha, -1 izquierda;
+   * "under": la palma va debajo del objeto (productos sueltos) en vez de en su costado (cajas).
+   */
+  createHand(side, under) {
+    const kit = this.handKit;
+    const hand = new THREE.Group();
+    const add = (geometry, material, x, y, z, sx = 1, sy = 1, sz = 1) => {
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.position.set(x, y, z);
+      mesh.scale.set(sx, sy, sz);
+      hand.add(mesh);
+      return mesh;
+    };
+    add(kit.palm, kit.glove, -0.4, 0, -0.1, 0.8, 2.2, 2.4); // palma
+    for (let i = 0; i < 4; i++) {
+      // Dedos estirados hacia delante sobre el objeto, el índice algo más largo
+      const f = add(kit.finger, kit.glove, -0.22, -0.78 + i * 0.52, -1.95 - (i === 2 ? 0.12 : 0));
+      f.rotation.y = 0.06;
+    }
+    const thumb = add(kit.finger, kit.glove, -0.3, 1.25, -0.9, 1.1, 1.1, 0.85);
+    thumb.rotation.set(-0.5, 0.15, 0);
+    // Antebrazo: puño del guante y manga hacia la cámara (sale por la parte de abajo de la pantalla)
+    const wrist = new THREE.Vector3(-0.45, 0, 1.0);
+    const dir = new THREE.Vector3(under ? -3.3 : -1.8, under ? 1.8 : -3.3, 6.3);
+    const length = dir.length();
+    dir.normalize();
+    const up = new THREE.Vector3(0, 1, 0);
+    const cuff = add(kit.arm, kit.cuff, wrist.x, wrist.y, wrist.z, 0.82, 1.4, 0.82);
+    cuff.quaternion.setFromUnitVectors(up, dir);
+    const sleeveStart = wrist.clone().addScaledVector(dir, 1.3);
+    const sleeve = add(kit.arm, kit.sleeve, sleeveStart.x, sleeveStart.y, sleeveStart.z, 1.05, length, 1.05);
+    sleeve.quaternion.setFromUnitVectors(up, dir);
+    // Espejo para la mano derecha (+x del marco apunta hacia el centro) y giro para sujetar por debajo
+    hand.scale.x = -side;
+    if (under) hand.rotation.z = -side * Math.PI / 2;
+    hand.traverse((o) => { o.castShadow = false; o.receiveShadow = false; });
+    return hand;
   }
 
   /** Muestra en las manos el producto real (libro, botella, bicicleta…) o la caja del tamaño del pedido. */
@@ -659,10 +722,16 @@ export class Renderer3D {
       }
       vm.models = [];
       if (box) {
-        const [, h, s] = boxSizeFor(box);
+        const [w, h, s] = boxSizeFor(box);
         const m = createBoxModel(box);
         m.position.set(0, -2.6 - h * 0.6, -(5.6 + s / 2));
         m.rotation.set(0.16, 0, 0);
+        // Las dos manos agarran la caja por los costados (pegadas al cartón, sin atravesarlo)
+        for (const side of [1, -1]) {
+          const hand = this.createHand(side, false);
+          hand.position.set(side * (w / 2 + 0.03), h * 0.42, s * 0.12);
+          m.add(hand);
+        }
         vm.models.push(m);
       } else {
         const dims = held.map(({ item }) => {
@@ -672,12 +741,28 @@ export class Renderer3D {
         });
         const total = dims.reduce((sum, d) => sum + d.across, 0) + Math.max(0, dims.length - 1) * 0.6;
         let cursor = -total / 2 + (dims.length === 1 ? 1.4 : 0);
+        const placedItems = [];
         for (const d of dims) {
           const m = createProductModel(d.name);
           m.position.set(cursor + d.across / 2, -3.2 - d.h * 0.4, -(5.4 + d.depth / 2));
           m.rotation.set(0.24, d.yaw, 0);
           vm.models.push(m);
+          placedItems.push({ left: cursor, right: cursor + d.across, y: m.position.y, z: m.position.z, depth: d.depth });
           cursor += d.across + 0.6;
+        }
+        // Manos por debajo de los extremos (una sola, centrada, si lo que se lleva es muy pequeño)
+        if (placedItems.length) {
+          const first = placedItems[0];
+          const last = placedItems[placedItems.length - 1];
+          const grips = last.right - first.left < 3.4
+            ? [[1, (first.left + last.right) / 2, first]]
+            : [[-1, first.left + 1.0, first], [1, last.right - 1.0, last]];
+          for (const [side, x, item] of grips) {
+            const hand = this.createHand(side, true);
+            hand.position.set(x, item.y - 0.02, item.z + item.depth * 0.1);
+            hand.rotation.x = 0.24;
+            vm.models.push(hand);
+          }
         }
       }
       for (const m of vm.models) {
@@ -822,6 +907,7 @@ export class Renderer3D {
     this.updateClouds(dt, darkness);
     // Los vehículos se colocan antes que la cámara: la vista del conductor depende de su posición
     this.syncVehicles(dt, darkness);
+    this.syncCouriers(dt);
     this.syncDrones(dt, darkness);
     this.updateCamera(dt);
     this.updateViewModel();
@@ -859,7 +945,16 @@ export class Renderer3D {
     const direction = new THREE.Vector3(Math.cos(angle) * 0.85, Math.sin(angle) * 0.9 + 0.3, 0.45).normalize();
     direction.lerp(MOON_DIRECTION, darkness * darkness * (3 - 2 * darkness)).normalize();
     const subject = this.game.getFocus();
-    const focus = this.tmpFocus.set(subject.x, 0, subject.y);
+    // Zona de sombras más ajustada cuanto más cerca está la cámara (más nitidez a pie y en cabina)
+    const span = this.footView ? 170 : this.cameraMode === 'driver' ? 240 : this.cameraMode === 'aerial' ? 420 : 340;
+    const cam = this.sun.shadow.camera;
+    if (cam.right !== span) {
+      cam.left = -span; cam.right = span; cam.top = span; cam.bottom = -span;
+      cam.updateProjectionMatrix();
+    }
+    // El centro se ajusta a la rejilla de texels del mapa de sombras: así no "tiemblan" al moverse
+    const texel = (span * 2) / this.sun.shadow.mapSize.x;
+    const focus = this.tmpFocus.set(Math.round(subject.x / texel) * texel, 0, Math.round(subject.y / texel) * texel);
     this.sun.position.copy(focus).addScaledVector(direction, 1000);
     this.sun.target.position.copy(focus);
     this.sun.target.updateMatrixWorld();
@@ -885,6 +980,7 @@ export class Renderer3D {
       if (this.envTarget) {
         setVehicleEnvironment(this.envTarget.texture, rampNumber(darkness, 0.7, 0.45, 0.07));
         setBuildingEnvironment(this.envTarget.texture, rampNumber(darkness, 0.8, 0.5, 0.06));
+        setSurfaceEnvironment(this.envTarget.texture, rampNumber(darkness, 0.55, 0.36, 0.08));
       }
     }
   }
@@ -986,14 +1082,77 @@ export class Renderer3D {
     for (const worker of state.workers) {
       const rt = runtime.workers[worker.id];
       const vehicle = state.vehicles.find((v) => v.id === worker.vehicleId);
-      if (!rt || !vehicle || rt.phase === 'idle') continue;
+      if (!rt || !vehicle || !vehicleOnRoad(rt)) continue;
       const entry = this.vehicleEntry(`worker:${worker.id}`, getVehicleType(vehicle.typeId), true);
       this.placeVehicle(entry, rt.x, rt.y, rt.angle, dt);
-      entry.model.setBraking(rt.phase === 'dropping' || rt.phase === 'loading');
+      entry.model.setBraking(!['driving', 'departing', 'arriving'].includes(rt.phase));
       entry.model.setLights(lightsOn);
       setLabelText(entry.label, worker.name, { size: 11, color: '#c9f7e4' });
-      scaleSpriteToScreen(entry.label, this.camera, this.cssH, entry.label.userData.label.pxHeight);
+      entry.label.visible = !rt.walker; // si ha bajado a entregar, el nombre lo lleva la persona
+      if (entry.label.visible) scaleSpriteToScreen(entry.label, this.camera, this.cssH, entry.label.userData.label.pxHeight);
     }
+  }
+
+  /**
+   * Repartidores a pie: bajan de su furgoneta, van a expedición, vuelven con las cajas en brazos, las meten por
+   * la trasera y suben; en cada destino llevan la caja hasta la puerta. Dentro de la furgoneta no se dibujan.
+   */
+  syncCouriers(dt) {
+    const { state, runtime } = this.game;
+    const company = getCompany(state);
+    const focus = this.game.getFocus();
+    const seen = new Set();
+    for (const worker of state.workers) {
+      const rt = runtime.workers[worker.id];
+      const w = rt?.walker;
+      if (!w) continue;
+      seen.add(worker.id);
+      let entry = this.couriers.get(worker.id);
+      if (!entry) {
+        const character = createCharacter({ id: worker.id, name: worker.name, vest: '#3a86ff', cap: company.primary });
+        this.vehicleLayer.add(character.group);
+        entry = { character, boxKey: '', boxes: [] };
+        this.couriers.set(worker.id, entry);
+      }
+      const { character } = entry;
+      character.group.visible = true;
+      // El suelo de la nave está un poco más alto que el del patio y la calle
+      character.group.position.set(w.x, isInsideDepot(this.game.city.depot, w.x, w.y) ? 0.6 : 0.1, w.y);
+      character.group.rotation.y = -w.yaw;
+      const load = courierLoad(this.game, worker);
+      character.update(w.anim, w.animTime, { carrying: load.length > 0, speed: w.moving, dt });
+      // Cajas apiladas delante del pecho (se rehacen solo si cambia lo que lleva)
+      const key = load.map((o) => o.id).join('|');
+      if (key !== entry.boxKey) {
+        entry.boxKey = key;
+        for (const m of entry.boxes) { character.anchor.remove(m); m.userData.dispose?.(); }
+        entry.boxes = [];
+        let y = 0;
+        for (const order of load.slice(0, 4)) {
+          const [, h, s] = boxSizeFor(order);
+          const m = createBoxModel(order);
+          m.position.set(s / 2 - 0.6, -h * 0.4 + y, 0);
+          m.rotation.y = Math.PI / 2;
+          character.anchor.add(m);
+          entry.boxes.push(m);
+          y += h;
+        }
+      }
+      setLabelText(character.label, worker.name, { size: 11, color: '#c9f7e4' });
+      character.label.visible = distance(focus.x, focus.y, w.x, w.y) < 160;
+      if (character.label.visible) scaleSpriteToScreen(character.label, this.camera, this.cssH, character.label.userData.label.pxHeight);
+    }
+    for (const [id, entry] of this.couriers) {
+      if (seen.has(id)) continue;
+      this.removeCourier(id, entry);
+    }
+  }
+
+  removeCourier(id, entry) {
+    for (const m of entry.boxes) m.userData.dispose?.();
+    this.vehicleLayer.remove(entry.character.group);
+    entry.character.dispose();
+    this.couriers.delete(id);
   }
 
   syncDrones(dt, darkness) {
@@ -1417,6 +1576,7 @@ export class Renderer3D {
   }
 
   destroy() {
+    for (const [id, entry] of [...this.couriers]) this.removeCourier(id, entry);
     this.resizeObserver.disconnect();
     for (const off of this.unsubscribe) off();
     this.canvas.removeEventListener('wheel', this.onWheel);
@@ -1424,7 +1584,9 @@ export class Renderer3D {
     this.effects.dispose();
     this.disposeWorld();
     this.outskirts?.dispose();
+    for (const item of Object.values(this.handKit ?? {})) item.dispose();
     setVehicleEnvironment(null, 0);
+    setSurfaceEnvironment(null, 0);
     this.envTarget?.dispose();
     this.skyDome.geometry.dispose();
     this.skyDome.material.dispose();

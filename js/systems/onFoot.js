@@ -20,36 +20,73 @@ export const GRAVITY = 270; // px/s²: salto de ~6 px (unos 75 cm a la escala de
 const SUBSTEP = 3;
 
 /**
- * Vehículos aparcados (mismo orden y sitio en las dos vistas y en la lógica). Un vehículo que el jugador
- * dejó al cambiar de vehículo se queda donde lo dejó (vehicle.park); el resto ocupa las plazas del patio,
- * primero los libres (para poder subir a ellos) y después los de los repartidores en el almacén.
+ * ¿La furgoneta de un repartidor está fuera de su plaza (saliendo, en la calle o volviendo)? Mientras el
+ * repartidor va a pie por el almacén a por las cajas, su furgoneta sigue aparcada (rt.atSpot).
  */
-export function parkedVehicles(game) {
+export function vehicleOnRoad(rt) {
+  return Boolean(rt) && rt.phase !== 'idle' && !rt.atSpot;
+}
+
+/**
+ * Plazas del patio: cada vehículo conserva la suya aunque su repartidor esté en ruta, así los demás no
+ * cambian de sitio y él vuelve a la misma. Primero los libres (para poder subir a ellos) y después los de
+ * los repartidores. Devuelve [{ vehicle, x, y, angle, onRoad }].
+ */
+function yardSpots(game) {
   const { state, runtime, city } = game;
   const list = [];
   const queue = [];
   for (const vehicle of state.vehicles) {
     if (vehicle.id === state.player.vehicleId) continue;
-    const rt = vehicle.driver ? runtime.workers[vehicle.driver] : null;
-    if (rt && rt.phase !== 'idle') continue;
-    if (!vehicle.driver && vehicle.park) list.push({ vehicle, ...vehicle.park });
+    if (!vehicle.driver && vehicle.park) list.push({ vehicle, ...vehicle.park, onRoad: false });
     else queue.push(vehicle);
   }
   queue.sort((a, b) => Number(Boolean(a.driver)) - Number(Boolean(b.driver)));
-  queue.slice(0, PARKED_SPOTS).forEach((vehicle, index) => list.push({ vehicle, ...parkedSpot(city.depot, index) }));
+  queue.slice(0, PARKED_SPOTS).forEach((vehicle, index) => {
+    const rt = vehicle.driver ? runtime.workers[vehicle.driver] : null;
+    list.push({ vehicle, ...parkedSpot(city.depot, index), onRoad: vehicleOnRoad(rt) });
+  });
   return list;
 }
 
-/** Puntos de interacción de un vehículo: trasera (zona de carga) y puerta del conductor (lado izquierdo). */
+/**
+ * Vehículos aparcados (mismo orden y sitio en las dos vistas y en la lógica). Un vehículo que el jugador
+ * dejó al cambiar de vehículo se queda donde lo dejó (vehicle.park); el resto ocupa las plazas del patio.
+ */
+export function parkedVehicles(game) {
+  return yardSpots(game).filter((spot) => !spot.onRoad).map(({ onRoad, ...spot }) => spot);
+}
+
+/** Plaza del patio que le toca a un vehículo (esté aparcado o en ruta), o null si no le cabe ninguna. */
+export function parkingSpotOf(game, vehicleId) {
+  const spot = yardSpots(game).find((s) => s.vehicle.id === vehicleId);
+  return spot ? { x: spot.x, y: spot.y, angle: spot.angle } : null;
+}
+
+/**
+ * Puntos de interacción de un vehículo: trasera (zona de carga) y las dos puertas delanteras. "cab" es la del
+ * conductor (lado izquierdo; la usan los repartidores), "cabRight" la del acompañante; "doors" tiene las dos.
+ */
 export function vehiclePoints(x, y, angle, type) {
   const fx = Math.cos(angle);
   const fy = Math.sin(angle);
   const lx = fy; // izquierda en un mapa con la y hacia abajo
   const ly = -fx;
+  const ahead = type.length * 0.12;
+  const out = type.width / 2 + 3;
+  const cab = { x: x + fx * ahead + lx * out, y: y + fy * ahead + ly * out, side: 'left' };
+  const cabRight = { x: x + fx * ahead - lx * out, y: y + fy * ahead - ly * out, side: 'right' };
   return {
     rear: { x: x - fx * (type.length / 2 + 3), y: y - fy * (type.length / 2 + 3) },
-    cab: { x: x + fx * type.length * 0.12 + lx * (type.width / 2 + 3), y: y + fy * type.length * 0.12 + ly * (type.width / 2 + 3) },
+    cab,
+    cabRight,
+    doors: [cab, cabRight],
   };
+}
+
+/** La puerta delantera más cercana a un punto (para guiar a la persona hacia el lado por el que llega). */
+export function nearestDoor(points, x, y) {
+  return points.doors.reduce((best, door) => (Math.hypot(door.x - x, door.y - y) < Math.hypot(best.x - x, best.y - y) ? door : best));
 }
 
 export function playerVehiclePoints(game) {
@@ -175,7 +212,7 @@ export function updateOnFoot(game, dt) {
   refreshTransitStatus(game);
 }
 
-/** Bajar del vehículo por la puerta del conductor (o por donde haya sitio). */
+/** Bajar del vehículo por la puerta por la que se subió (o por donde haya sitio). */
 export function exitVehicle(game) {
   const { state } = game;
   const p = state.player;
@@ -186,9 +223,12 @@ export function exitVehicle(game) {
   const fx = Math.cos(p.angle);
   const fy = Math.sin(p.angle);
   const side = type.width / 2 + WALKER_RADIUS + 3;
+  const left = { x: p.x + fx * type.length * 0.12 + fy * side, y: p.y + fy * type.length * 0.12 - fx * side };
+  const right = { x: p.x + fx * type.length * 0.12 - fy * side, y: p.y + fy * type.length * 0.12 + fx * side };
+  // Se baja por la misma puerta por la que subió (si hay sitio); si no, por la otra, por detrás o por delante
+  const doors = game.runtime.doorSide === 'right' ? [right, left] : [left, right];
   const candidates = [
-    { x: p.x + fx * type.length * 0.12 + fy * side, y: p.y + fy * type.length * 0.12 - fx * side }, // izquierda
-    { x: p.x + fx * type.length * 0.12 - fy * side, y: p.y + fy * type.length * 0.12 + fx * side }, // derecha
+    ...doors,
     { x: p.x - fx * (type.length / 2 + WALKER_RADIUS + 4), y: p.y - fy * (type.length / 2 + WALKER_RADIUS + 4) }, // detrás
     { x: p.x + fx * (type.length / 2 + WALKER_RADIUS + 4), y: p.y + fy * (type.length / 2 + WALKER_RADIUS + 4) }, // delante
   ];
@@ -211,8 +251,11 @@ export function exitVehicle(game) {
   return { ok: true, kind: 'exit' };
 }
 
-/** Subir al vehículo propio o, si está aparcado en el patio y libre, a otro de la flota. */
-export function enterVehicle(game, vehicleId = game.state.player.vehicleId) {
+/**
+ * Subir al vehículo propio o, si está aparcado en el patio y libre, a otro de la flota. "side" es la puerta
+ * usada ('left' conductor, 'right' acompañante): al bajar se sale por el mismo lado.
+ */
+export function enterVehicle(game, vehicleId = game.state.player.vehicleId, side = 'left') {
   const { state } = game;
   const p = state.player;
   if (p.mode === 'drive') return { ok: false, reason: 'Ya estás conduciendo' };
@@ -238,6 +281,7 @@ export function enterVehicle(game, vehicleId = game.state.player.vehicleId) {
     game.events.emit('vehicleChanged', { vehicle: parked.vehicle, type: getVehicleType(parked.vehicle.typeId) });
   }
   p.mode = 'drive';
+  game.runtime.doorSide = side === 'right' ? 'right' : 'left';
   stopVehicle(game);
   game.controls.walkX = 0;
   game.controls.walkY = 0;

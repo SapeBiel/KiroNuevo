@@ -244,21 +244,31 @@ export function getHazardTexture() {
 
 // ------------------------------------------------------ Fachadas de edificio ----
 
-const PX = 2; // píxeles de textura por unidad de mundo
+const PX = 5; // píxeles de textura por unidad de mundo
 
 /**
  * Estilos de fachada. cell = tamaño de una celda (unidades de mundo); tile = celdas por repetición.
+ * window = hueco de la ventana dentro de la celda [x, y, ancho, alto] (y desde arriba): lo usan el dibujo de la
+ * textura y los alféizares y dinteles en 3D (buildings3d.js), para que coincidan.
  * La textura base es clara para que el color del material tiñe la pared.
  */
 const WALL_STYLES = {
-  home: { cell: [30, 34], tile: [3, 1], draw: drawHomeCell },
-  flats: { cell: [24, 23], tile: [4, 1], draw: drawFlatsCell },
-  glass: { cell: [16, 20], tile: [6, 1], draw: drawGlassCell },
-  shop: { cell: [48, 42], tile: [2, 1], draw: drawShopCell },
-  industrial: { cell: [20, 58], tile: [4, 1], draw: drawIndustrialCell },
-  metal: { cell: [16, 44], tile: [6, 1], draw: drawMetalCell },
-  depot: { cell: [32, 64], tile: [3, 1], draw: drawDepotCell },
+  home: { cell: [30, 34], tile: [3, 1], window: [9, 8, 12, 15], draw: drawHomeCell },
+  flats: { cell: [24, 23], tile: [4, 1], window: [6, 4, 12, 12], draw: drawFlatsCell },
+  glass: { cell: [16, 20], tile: [6, 1], window: null, draw: drawGlassCell },
+  shop: { cell: [48, 42], tile: [2, 1], window: [6, 13, 36, 20], draw: drawShopCell },
+  industrial: { cell: [20, 58], tile: [4, 1], window: null, draw: drawIndustrialCell },
+  metal: { cell: [16, 44], tile: [6, 1], window: null, draw: drawMetalCell },
+  depot: { cell: [32, 64], tile: [3, 1], window: [8, 10, 16, 9], draw: drawDepotCell },
 };
+
+/** Medidas de la celda y del hueco de ventana de un estilo (null si no tiene ventanas sueltas). */
+export function wallWindowLayout(style) {
+  const spec = WALL_STYLES[style] ?? WALL_STYLES.home;
+  return {
+    cellW: spec.cell[0], cellH: spec.cell[1], cols: spec.tile[0], rows: spec.tile[1], window: spec.window,
+  };
+}
 
 const wallCache = new Map();
 
@@ -284,7 +294,8 @@ export function getWallTextures(style) {
         ctx.save();
         ctx.translate(c * cw * PX, r * ch * PX);
         ctx.scale(PX, PX);
-        spec.draw(ctx, cw, ch, { lit: isLit, on, c, r });
+        // Cada celda tiene su propio generador: el dibujo de día y el de las luces coinciden
+        spec.draw(ctx, cw, ch, { lit: isLit, on, c, r, rng: createRng(4000 + style.length * 97 + c * 31 + r * 7) });
         ctx.restore();
       }
     }
@@ -302,43 +313,107 @@ export function getWallTextures(style) {
 const GLASS = '#6f95b8';
 const GLASS_DARK = '#3f607d';
 
-function paintWall(ctx, w, h, lit, base = '#f4f1ea') {
+/** Revoco: color base con grano fino, manchas suaves y algo de suciedad abajo (todo en unidades de celda). */
+function paintWall(ctx, w, h, lit, base = '#f4f1ea', rng = Math.random) {
   if (lit) return;
   ctx.fillStyle = base;
   ctx.fillRect(0, 0, w, h);
+  for (let i = 0; i < w * h * 0.35; i++) {
+    ctx.fillStyle = rng() < 0.5 ? 'rgba(0,0,0,0.035)' : 'rgba(255,255,255,0.05)';
+    ctx.fillRect(rng() * w, rng() * h, 0.4 + rng() * 0.8, 0.4 + rng() * 0.6);
+  }
+  const dirt = ctx.createLinearGradient(0, h * 0.75, 0, h);
+  dirt.addColorStop(0, 'rgba(60,50,40,0)');
+  dirt.addColorStop(1, 'rgba(60,50,40,0.1)');
+  ctx.fillStyle = dirt;
+  ctx.fillRect(0, h * 0.75, w, h * 0.25);
 }
 
-function windowRect(ctx, x, y, w, h, { lit, on, glass = GLASS, frame = '#c9c3b8' }) {
+/** Ladrillo caravista (hiladas alternas con llagas y variación de tono). */
+function paintBrick(ctx, x0, y0, w, h, rng, base = [178, 98, 70]) {
+  const bh = 1.6;
+  const bw = 4.2;
+  ctx.fillStyle = '#cfc6b8';
+  ctx.fillRect(x0, y0, w, h);
+  for (let y = 0, row = 0; y < h; y += bh, row++) {
+    for (let x = -((row % 2) * bw) / 2; x < w; x += bw) {
+      const k = 0.85 + rng() * 0.25;
+      ctx.fillStyle = `rgb(${Math.round(base[0] * k)},${Math.round(base[1] * k)},${Math.round(base[2] * k)})`;
+      ctx.fillRect(x0 + Math.max(0, x) + 0.15, y0 + y + 0.15, Math.min(bw - 0.3, w - x - 0.15), bh - 0.3);
+    }
+  }
+}
+
+/** Ventana con premarco, carpintería, vidrio con reflejo del cielo, parteluz y persiana enrollable. */
+function windowRect(ctx, x, y, w, h, { lit, on, glass = GLASS, frame = '#f2efe8', blind = 0, mullion = true }) {
   if (lit) {
     if (on) {
       ctx.fillStyle = '#ffffff';
-      ctx.fillRect(x, y, w, h);
+      ctx.fillRect(x, y + h * blind, w, h * (1 - blind));
     }
     return;
   }
+  // Mocheta en sombra (da profundidad al hueco)
+  ctx.fillStyle = 'rgba(0,0,0,0.28)';
+  ctx.fillRect(x - 0.9, y - 0.9, w + 1.8, h + 1.8);
   ctx.fillStyle = frame;
-  ctx.fillRect(x - 1.5, y - 1.5, w + 3, h + 3);
-  ctx.fillStyle = glass;
-  ctx.fillRect(x, y, w, h);
-  ctx.fillStyle = 'rgba(255,255,255,0.28)';
-  ctx.fillRect(x, y, w, h * 0.35);
+  ctx.fillRect(x - 0.5, y - 0.5, w + 1, h + 1);
+  const g = ctx.createLinearGradient(x, y, x + w * 0.4, y + h);
+  g.addColorStop(0, '#d9ecf7');
+  g.addColorStop(0.45, glass);
+  g.addColorStop(1, GLASS_DARK);
+  ctx.fillStyle = g;
+  ctx.fillRect(x + 0.4, y + 0.4, w - 0.8, h - 0.8);
+  ctx.fillStyle = 'rgba(255,255,255,0.22)';
+  ctx.beginPath();
+  ctx.moveTo(x + w * 0.15, y + h);
+  ctx.lineTo(x + w * 0.45, y);
+  ctx.lineTo(x + w * 0.62, y);
+  ctx.lineTo(x + w * 0.32, y + h);
+  ctx.fill();
+  if (mullion) {
+    ctx.fillStyle = frame;
+    ctx.fillRect(x + w / 2 - 0.3, y, 0.6, h);
+  }
+  if (blind > 0) {
+    // Persiana enrollable a medio bajar, con lamas
+    const bh = h * blind;
+    ctx.fillStyle = '#d8d2c6';
+    ctx.fillRect(x + 0.4, y + 0.4, w - 0.8, bh);
+    ctx.fillStyle = 'rgba(0,0,0,0.14)';
+    for (let k = y + 1; k < y + bh; k += 0.9) ctx.fillRect(x + 0.4, k, w - 0.8, 0.25);
+  }
+  // Cajón de la persiana sobre la ventana
+  ctx.fillStyle = 'rgba(0,0,0,0.12)';
+  ctx.fillRect(x - 0.5, y - 2.2, w + 1, 1.3);
 }
 
 function drawHomeCell(ctx, w, h, o) {
-  paintWall(ctx, w, h, o.lit);
-  windowRect(ctx, w / 2 - 6, 9, 12, 14, o);
+  paintWall(ctx, w, h, o.lit, '#f4f1ea', o.rng);
+  const blind = o.on ? 0.15 : [0.2, 0.55, 0.85][(o.c + o.r) % 3];
+  windowRect(ctx, 9, 8, 12, 15, { ...o, blind });
   if (!o.lit) {
-    ctx.fillStyle = 'rgba(0,0,0,0.07)';
-    ctx.fillRect(0, h - 3, w, 3);
+    // Zócalo de piedra y una fina moldura bajo el alero
+    ctx.fillStyle = 'rgba(0,0,0,0.08)';
+    ctx.fillRect(0, h - 3.2, w, 3.2);
+    ctx.fillStyle = 'rgba(0,0,0,0.12)';
+    ctx.fillRect(0, h - 3.2, w, 0.3);
+    ctx.fillStyle = 'rgba(255,255,255,0.25)';
+    ctx.fillRect(0, 0.6, w, 0.6);
   }
 }
 
 function drawFlatsCell(ctx, w, h, o) {
-  paintWall(ctx, w, h, o.lit, '#eee9df');
-  windowRect(ctx, 6, 5, 12, 11, o);
+  if (!o.lit && o.c % 2 === 0) paintBrick(ctx, 0, 0, w, h, o.rng);
+  else paintWall(ctx, w, h, o.lit, '#eee9df', o.rng);
+  const blind = o.on ? 0.1 : [0.3, 0.7, 0.05, 0.5][(o.c * 3 + o.r) % 4];
+  windowRect(ctx, 6, 4, 12, 12, { ...o, blind });
   if (!o.lit) {
-    ctx.fillStyle = 'rgba(0,0,0,0.12)';
-    ctx.fillRect(0, h - 2, w, 2);
+    // Canto del forjado entre plantas
+    ctx.fillStyle = '#e6e1d6';
+    ctx.fillRect(0, h - 2.2, w, 2.2);
+    ctx.fillStyle = 'rgba(0,0,0,0.16)';
+    ctx.fillRect(0, h - 2.2, w, 0.35);
   }
 }
 
@@ -350,22 +425,43 @@ function drawGlassCell(ctx, w, h, o) {
     }
     return;
   }
-  const g = ctx.createLinearGradient(0, 0, w, h);
-  g.addColorStop(0, '#ffffff');
-  g.addColorStop(1, '#bfd2e2');
+  // Muro cortina: cada vidrio refleja un trozo de cielo distinto
+  const tilt = (o.rng?.() ?? 0.5) * 0.5;
+  const g = ctx.createLinearGradient(0, 0, w * (0.6 + tilt), h);
+  g.addColorStop(0, '#f4f9fd');
+  g.addColorStop(0.35 + tilt * 0.3, '#c6d9e8');
+  g.addColorStop(1, '#8fa9c0');
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, w, h);
-  ctx.fillStyle = 'rgba(40,70,100,0.55)';
-  ctx.fillRect(0, 0, 1.2, h);
-  ctx.fillRect(0, h - 3, w, 3);
+  ctx.fillStyle = 'rgba(255,255,255,0.18)';
+  ctx.fillRect(w * 0.1, 0, w * 0.18, h);
+  // Montantes y travesaños de aluminio, y la banda opaca del forjado
+  ctx.fillStyle = 'rgba(60,80,100,0.75)';
+  ctx.fillRect(0, 0, 0.8, h);
+  ctx.fillRect(w / 2 - 0.25, 0, 0.5, h - 3.5);
+  ctx.fillStyle = 'rgba(70,90,110,0.85)';
+  ctx.fillRect(0, h - 3.5, w, 3.5);
+  ctx.fillStyle = 'rgba(255,255,255,0.12)';
+  ctx.fillRect(0, h - 3.5, w, 0.4);
 }
 
 function drawShopCell(ctx, w, h, o) {
-  paintWall(ctx, w, h, o.lit, '#f1e7d3');
-  windowRect(ctx, 6, 13, w - 12, 20, { ...o, glass: '#9cc3dc', frame: '#8b7a61' });
+  paintWall(ctx, w, h, o.lit, '#f1e7d3', o.rng);
   if (!o.lit) {
-    ctx.fillStyle = 'rgba(0,0,0,0.1)';
-    ctx.fillRect(0, 0, w, 8);
+    // Planta alta de ladrillo sobre el escaparate
+    paintBrick(ctx, 0, 0, w, 10.5, o.rng, [166, 96, 72]);
+    ctx.fillStyle = 'rgba(0,0,0,0.18)';
+    ctx.fillRect(0, 10.5, w, 0.6);
+  }
+  windowRect(ctx, 6, 13, w - 12, 20, { ...o, glass: '#9cc3dc', frame: '#5b4a3a', mullion: false });
+  if (!o.lit) {
+    // Carpintería del escaparate, zócalo y algún producto a la vista
+    ctx.fillStyle = '#5b4a3a';
+    for (const x of [6 + (w - 12) / 3, 6 + ((w - 12) * 2) / 3]) ctx.fillRect(x - 0.4, 13, 0.8, 20);
+    ctx.fillStyle = 'rgba(255,255,255,0.35)';
+    for (let i = 0; i < 5; i++) ctx.fillRect(9 + i * 6.5, 28, 3.5, 4.4);
+    ctx.fillStyle = '#7d7468';
+    ctx.fillRect(0, 33.6, w, h - 33.6);
   }
 }
 
@@ -379,24 +475,39 @@ function drawIndustrialCell(ctx, w, h, o) {
   }
   ctx.fillStyle = '#eceef0';
   ctx.fillRect(0, 0, w, h);
-  ctx.fillStyle = 'rgba(0,0,0,0.12)';
-  for (let x = 0; x < w; x += 4) ctx.fillRect(x, 0, 1.2, h);
+  // Chapa trapezoidal: nervios con luz y sombra
+  for (let x = 0; x < w; x += 4) {
+    ctx.fillStyle = 'rgba(0,0,0,0.14)';
+    ctx.fillRect(x, 0, 1.1, h);
+    ctx.fillStyle = 'rgba(255,255,255,0.2)';
+    ctx.fillRect(x + 1.1, 0, 0.5, h);
+  }
   ctx.fillStyle = GLASS_DARK;
   ctx.fillRect(3, 8, w - 6, 6);
+  ctx.fillStyle = 'rgba(255,255,255,0.25)';
+  ctx.fillRect(3, 8, w - 6, 1.4);
+  ctx.fillStyle = 'rgba(80,60,40,0.12)';
+  ctx.fillRect(0, h - 6, w, 6);
 }
 
 function drawMetalCell(ctx, w, h, o) {
   if (o.lit) return;
   ctx.fillStyle = '#eef0f3';
   ctx.fillRect(0, 0, w, h);
-  ctx.fillStyle = 'rgba(0,0,0,0.13)';
-  for (let x = 0; x < w; x += 3) ctx.fillRect(x, 0, 1, h);
+  for (let x = 0; x < w; x += 3) {
+    ctx.fillStyle = 'rgba(0,0,0,0.13)';
+    ctx.fillRect(x, 0, 0.9, h);
+    ctx.fillStyle = 'rgba(255,255,255,0.18)';
+    ctx.fillRect(x + 0.9, 0, 0.4, h);
+  }
   ctx.fillStyle = 'rgba(0,0,0,0.18)';
   ctx.fillRect(0, h - 4, w, 4);
+  ctx.fillStyle = 'rgba(120,90,60,0.1)';
+  ctx.fillRect(0, h - 9, w, 5);
 }
 
 function drawDepotCell(ctx, w, h, o) {
-  paintWall(ctx, w, h, o.lit, '#f3ecd9');
+  paintWall(ctx, w, h, o.lit, '#f3ecd9', o.rng);
   windowRect(ctx, 8, 10, w - 16, 9, { ...o, glass: GLASS });
   if (!o.lit) {
     ctx.fillStyle = 'rgba(0,0,0,0.1)';

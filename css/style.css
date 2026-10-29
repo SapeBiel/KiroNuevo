@@ -231,6 +231,8 @@ kbd {
 }
 .pc-taskbar b { color: #fff; }
 .pc-hint { margin-left: auto; color: var(--muted); }
+/* Los avisos (compras, errores) se ven por encima de la pantalla del ordenador */
+body:has(.modal-computer) #toasts, body:has(.modal-computer) #banner-root { z-index: 25; }
 .badge-dot.is-count { font-size: 10px; min-width: 17px; height: 17px; display: grid; place-items: center; color: #2b1600; font-weight: 900; top: 1px; right: 2px; }
 
 .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
@@ -245,6 +247,22 @@ kbd {
 .subtab:hover { color: #fff; }
 .subtab.is-active { background: var(--panel-3); color: #fff; }
 .dot { position: absolute; top: 2px; right: 4px; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+/* Mejoras: contador de compras posibles en cada pestaña, introducción y estados de las tarjetas */
+.subtabs { overflow-x: auto; scrollbar-width: thin; }
+.subtab { flex: 1 0 auto; padding: 7px 10px; white-space: nowrap; font-size: 12.5px; }
+.subtab .count {
+  display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 5px; margin-left: 5px; border-radius: 9px;
+  background: var(--accent); color: #2b1600; font-size: 11px; font-weight: 900; font-style: normal; vertical-align: 1px;
+}
+.panel-intro { margin: 0 2px 4px; font-size: 12.5px; }
+.cat-tag { margin-left: 8px; padding: 1px 7px; border-radius: 99px; background: rgba(255, 255, 255, 0.07); font: 700 10.5px var(--font); color: var(--muted); vertical-align: 1px; }
+.effect .now { color: #cfd8f2; }
+.save { margin-top: 7px; font-size: 11.5px; color: #cfd8f2; }
+.save b { color: #ffd166; }
+.save .bar { margin-top: 3px; }
+.need { margin-top: 7px; font-size: 12px !important; color: #ffd6a0 !important; }
+.done-list { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.done-chip { padding: 4px 10px; border-radius: 99px; background: rgba(70, 194, 142, 0.12); border: 1px solid rgba(70, 194, 142, 0.4); color: #8ce0b9; font-size: 12px; font-weight: 700; }
 .empty { text-align: center; padding: 22px 12px; color: var(--muted); }
 .empty-icon { font-size: 38px; margin-bottom: 6px; }
 .empty b { display: block; color: var(--text); margin-bottom: 3px; }

@@ -10,7 +10,6 @@
 
 import { SHELVES } from '../config/products.js';
 
-export const DOOR_HALF = 8; // la puerta peatonal mide 16 px: cabe una persona, no un vehículo
 export const WALL = 3;
 export const SHELF_DEPTH = 12;
 export const SHELF_HEIGHT = 30;
@@ -44,12 +43,9 @@ export function depotLayout(depot) {
     { x0: outer.x0, y0: outer.y0, x1: outer.x1, y1: inner.y0 }, // fondo
     { x0: outer.x0, y0: outer.y0, x1: inner.x0, y1: outer.y1 }, // izquierda
     { x0: inner.x1, y0: outer.y0, x1: outer.x1, y1: outer.y1 }, // derecha
-    // Barandilla de la fachada, con el hueco de la puerta peatonal en el centro
-    { x0: outer.x0, y0: inner.y1, x1: doorX - DOOR_HALF, y1: outer.y1, railing: true },
-    { x0: doorX + DOOR_HALF, y0: inner.y1, x1: outer.x1, y1: outer.y1, railing: true },
   ];
-  // Los vehículos no caben por la puerta peatonal
-  const vehicleBarrier = { x0: doorX - DOOR_HALF, y0: inner.y1, x1: doorX + DOOR_HALF, y1: outer.y1, vehicleOnly: true };
+  // Fachada abierta, sin valla: las personas entran por cualquier punto; los vehículos se quedan en el patio
+  const vehicleBarrier = { x0: inner.x0, y0: inner.y1, x1: inner.x1, y1: outer.y1, vehicleOnly: true };
 
   // --- Oficina (esquina noroeste): tabiques con ventanas y una puerta en el tabique sur
   const office = {
@@ -184,8 +180,8 @@ export function playerParkSpot(depot) {
 }
 
 /**
- * Plazas de los vehículos aparcados (a la izquierda de la puerta, para dejar libre el paso). La primera fila
- * deja hueco entre la barandilla y la puerta del conductor para que quepa una persona, incluso con camiones.
+ * Plazas de los vehículos aparcados (a la izquierda de la entrada, para dejar libre el paso). La primera fila
+ * deja hueco entre la fachada y la puerta del conductor para que quepa una persona, incluso con camiones.
  */
 export const PARKED_SPOTS = 4;
 export function parkedSpot(depot, index) {

@@ -11,7 +11,7 @@ export function vehiclePurchaseStatus(game, typeId) {
   const { state, derived } = game;
   const type = VEHICLES[typeId];
   if (state.level < type.unlockLevel) return { state: 'locked', reason: `Requiere nivel ${type.unlockLevel}` };
-  if (state.vehicles.length >= derived.maxVehicles) return { state: 'locked', reason: 'Garaje lleno: amplía las plazas de garaje' };
+  if (state.vehicles.length >= derived.maxVehicles) return { state: 'locked', reason: 'Garaje lleno: compra Plazas de garaje (Mejoras → Vehículos)' };
   if (state.money < type.cost) return { state: 'poor', reason: `Te faltan ${formatMoney(type.cost - state.money)}` };
   return { state: 'available', reason: '' };
 }

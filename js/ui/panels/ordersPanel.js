@@ -1,9 +1,11 @@
 // Panel de pedidos: lista, estado, recompensa estimada y acciones de carga.
 
-import { ORDER_KINDS, STATUS_LABELS } from '../../config/packages.js';
+import { ORDER_KINDS } from '../../config/packages.js';
 import { ZONES } from '../../config/zones.js';
 import { formatDistanceMeters, formatDuration, formatMoney, formatInt, pad } from '../../core/util.js';
-import { compareOrders, etaSeconds, storageUsed, cargoSlotsUsed, playerCapacity } from '../../systems/orders.js';
+import {
+  compareOrders, describeOrderStatus, etaSeconds, storageUsed, cargoSlotsUsed, playerCapacity,
+} from '../../systems/orders.js';
 import { rewardPreview } from '../../systems/economy.js';
 import { bar } from '../dom.js';
 import { ITEM_AT_LABELS, getShelf } from '../../config/products.js';
@@ -53,33 +55,14 @@ export function renderOrdersPanel(game) {
 }
 
 function renderOrderCard(game, order, playerStats, inDepot) {
-  const { city, state } = game;
+  const { city } = game;
   const kind = ORDER_KINDS[order.kind];
   const building = city.getBuilding(order.buildingId);
   const zone = ZONES[order.zoneId];
   const reward = rewardPreview(game, order);
   const mine = order.assignedTo === 'player';
-  const otherAssignee = order.assignedTo && !mine
-    ? (state.workers.find((w) => w.id === order.assignedTo)?.name ?? state.drones.find((d) => d.id === order.assignedTo)?.name ?? 'Equipo')
-    : null;
-
-  const inCargo = state.player.cargo.includes(order.id);
-  const inHands = state.player.hands.box === order.id;
   const picking = mine && order.handling === 'picking';
-  let statusText = STATUS_LABELS[order.status];
-  let statusClass = order.status;
-  const staffPrep = Boolean(otherAssignee) && order.handling === 'staff';
-  if (staffPrep) {
-    statusText = order.prep > 0 ? `Preparando · ${otherAssignee}` : `A expedición · ${otherAssignee}`;
-    statusClass = 'prep';
-  } else if (otherAssignee) { statusText = `En reparto · ${otherAssignee}`; statusClass = 'in_transit'; }
-  else if (picking) { statusText = 'Reuniendo productos'; statusClass = 'prep'; }
-  else if (inHands) { statusText = 'Caja en tus manos'; statusClass = 'picked'; }
-  else if (inCargo) { statusText = order.status === 'in_transit' ? 'En reparto · tu vehículo' : 'Cargado en tu vehículo'; statusClass = order.status; }
-  else if (!mine && order.prep > 0) {
-    statusText = game.derived.prepLanes > 0 ? 'Por preparar' : 'Por preparar · a mano';
-    statusClass = 'prep';
-  } else if (!mine && order.prep <= 0) { statusText = 'Listo en expedición'; statusClass = 'pending'; }
+  const { text: statusText, cls: statusClass, assignee: otherAssignee, staffPrep } = describeOrderStatus(game, order);
 
   const prepPercent = order.prepTotal ? (1 - order.prep / order.prepTotal) * 100 : 100;
   const tracked = game.trackedOrderId === order.id;

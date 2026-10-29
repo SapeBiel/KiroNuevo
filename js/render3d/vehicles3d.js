@@ -7,6 +7,7 @@ import * as THREE from '../vendor/three.module.js';
 import { drawBrandMark, roundRect } from '../render/sprites.js';
 import { DEFAULT_COMPANY, brandTitle, companyKey, companyWebsite, contrastText } from '../systems/branding.js';
 import { getBeamTexture, makeCanvas, toTexture } from './textures3d.js';
+import { roundedBoxGeometry, tireGeometry as tireProfileGeometry } from './geometries3d.js';
 
 // ------------------------------------------------- Reflejos del entorno ----
 // Los materiales de los vehículos reflejan un cielo pre-calculado. De noche se atenúa desde el renderizador.
@@ -46,6 +47,7 @@ function releaseMaterial(material) {
 // ------------------------------------------------------- Recursos comunes ----
 
 const unitBox = new THREE.BoxGeometry(1, 1, 1);
+const roundBox = roundedBoxGeometry(0.2, 2);
 const beamGeometry = new THREE.PlaneGeometry(96, 44);
 const DECAL = { polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 };
 
@@ -80,7 +82,8 @@ function cachedGeometry(key, create) {
   }
   return geometry;
 }
-const tireGeometry = (r) => cachedGeometry(`tire|${r}`, () => new THREE.CylinderGeometry(r, r, 4, 24).rotateX(Math.PI / 2));
+// Neumático torneado: banda de rodadura con hombros redondeados y flancos abombados (no un cilindro)
+const tireGeometry = (r) => cachedGeometry(`tire|${r}`, () => tireProfileGeometry(0.34, 32).scale(r * 2, 4, r * 2).rotateX(Math.PI / 2));
 const discGeometry = (r) => cachedGeometry(`disc|${r}`, () => new THREE.CylinderGeometry(r, r, 0.5, 20).rotateX(Math.PI / 2));
 const hubGeometry = cachedGeometry('hub', () => new THREE.CylinderGeometry(0.8, 0.8, 0.9, 12).rotateX(Math.PI / 2));
 const pipeGeometry = cachedGeometry('pipe', () => new THREE.CylinderGeometry(1, 1, 1, 12));
@@ -467,9 +470,9 @@ export function createVehicleModel(type) {
     group.add(mesh);
     return mesh;
   };
-  /** Caja con la base en "y". */
+  /** Caja con la base en "y" y los cantos redondeados (paragolpes, retrovisores, pilotos, barras…). */
   const box = (w, h, d, x, y, z, material, cast = false) => {
-    const mesh = add(unitBox, material, x, y + h / 2, z, cast);
+    const mesh = add(roundBox, material, x, y + h / 2, z, cast);
     mesh.scale.set(w, h, d);
     return mesh;
   };

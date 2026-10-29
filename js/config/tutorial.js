@@ -32,13 +32,13 @@ export const TUTORIAL_STEPS = [
   {
     id: 'load',
     title: 'Carga la caja',
-    text: 'Sal por la puerta peatonal de la fachada y lleva la caja a la parte trasera de la furgoneta, en el patio. Pulsa E para cargarla.',
+    text: 'Sal del almacén por la fachada abierta y lleva la caja a la parte trasera de la furgoneta, en el patio. Pulsa E para cargarla.',
     done: loadedOrLater,
   },
   {
     id: 'drive',
     title: 'Sube y conduce',
-    text: 'Ponte junto a la puerta del conductor (lado izquierdo) y pulsa E para subir. Conduce hasta el pin de color del destino (también sale en el minimapa) y para dentro de su círculo.',
+    text: 'Ponte junto a una de las puertas delanteras (conductor o acompañante) y pulsa E para subir. Conduce hasta el pin de color del destino (también sale en el minimapa) y para dentro de su círculo.',
     done: (game) => game.getDeliverableOrders().length > 0 || delivered(game),
   },
   {

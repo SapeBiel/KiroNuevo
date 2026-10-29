@@ -3,7 +3,7 @@
 import {
   TILE, METERS_PER_TILE, DROP_RADIUS, STREAK_WINDOW,
 } from '../config/constants.js';
-import { PACKAGES, ORDER_KINDS, KIND_ORDER } from '../config/packages.js';
+import { PACKAGES, ORDER_KINDS, KIND_ORDER, STATUS_LABELS } from '../config/packages.js';
 import { DRONE_TYPES } from '../config/drones.js';
 import { ITEMS_BY_SIZE, shelfOf } from '../config/products.js';
 import { BELT_SPEED, depotLayout } from '../world/depotLayout.js';
@@ -100,6 +100,32 @@ export function automationIdleReason(game, canTake) {
 }
 
 export const compareOrders = (a, b) => PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority] || a.number - b.number;
+
+/**
+ * Estado legible de un pedido (lo usan el panel Pedidos del ordenador y la pantalla de la puerta del almacén).
+ * Devuelve { text, cls, assignee, staffPrep }: "cls" es pending | prep | picked | in_transit.
+ */
+export function describeOrderStatus(game, order) {
+  const { state } = game;
+  const mine = order.assignedTo === 'player';
+  const assignee = order.assignedTo && !mine
+    ? (state.workers.find((w) => w.id === order.assignedTo)?.name ?? state.drones.find((d) => d.id === order.assignedTo)?.name ?? 'Equipo')
+    : null;
+  const staffPrep = Boolean(assignee) && order.handling === 'staff';
+  const result = (text, cls) => ({ text, cls, assignee, staffPrep });
+  if (staffPrep) return result(order.prep > 0 ? `Preparando · ${assignee}` : `A expedición · ${assignee}`, 'prep');
+  // Un repartidor que aún está en el almacén (a por la caja o cargándola en su furgoneta)
+  if (assignee && game.runtime?.workers?.[order.assignedTo]?.atSpot) return result(`Cargando · ${assignee}`, 'picked');
+  if (assignee) return result(`En reparto · ${assignee}`, 'in_transit');
+  if (mine && order.handling === 'picking') return result('Reuniendo productos', 'prep');
+  if (state.player.hands.box === order.id) return result('Caja en tus manos', 'picked');
+  if (state.player.cargo.includes(order.id)) {
+    return result(order.status === 'in_transit' ? 'En reparto · tu vehículo' : 'Cargado en tu vehículo', order.status);
+  }
+  if (!mine && order.prep > 0) return result(game.derived.prepLanes > 0 ? 'Por preparar' : 'Por preparar · a mano', 'prep');
+  if (!mine) return result('Listo en expedición', 'pending');
+  return result(STATUS_LABELS[order.status], order.status);
+}
 
 /** Segundos estimados para llegar al destino a la velocidad indicada. */
 export function etaSeconds(order, speed) {

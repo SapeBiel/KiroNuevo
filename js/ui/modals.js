@@ -88,16 +88,17 @@ export function helpHtml() {
   return `
     <h2>Cómo se juega</h2>
     <ol class="help-list">
-      <li><b>Ordenador de la oficina:</b> toda la gestión se hace desde él. Entra en la oficina acristalada (esquina del fondo a la izquierda del almacén) y pulsa <kbd>E</kbd> junto a la mesa. Tiene las aplicaciones Pedidos, Mejoras, Equipo, Empresa y Logros (teclas <kbd>1</kbd>–<kbd>5</kbd> con el ordenador encendido). Fuera de la oficina, la tarjeta <i>En las manos</i> te dice qué productos faltan del pedido.</li>
+      <li><b>Ordenador de la oficina:</b> toda la gestión se hace desde él. Entra en la oficina acristalada (esquina del fondo a la izquierda del almacén) y pulsa <kbd>E</kbd> junto a la mesa. Tiene las aplicaciones Pedidos, Mejoras, Equipo, Empresa y Logros (teclas <kbd>1</kbd>–<kbd>5</kbd> con el ordenador encendido). Fuera de la oficina, la tarjeta <i>En las manos</i> te dice qué productos faltan del pedido y la pantalla de pedidos colgada sobre la puerta del almacén (por dentro) los muestra todos con su estado.</li>
       <li><b>Cinta transportadora:</b> los productos de los pedidos salen de recepción y avanzan por la cinta. Ponte junto a ella, mira el producto y pulsa <kbd>E</kbd> para cogerlo. Los voluminosos llenan las manos. Si no lo coges, cae al cajón del final de la cinta y lo puedes coger de ahí.</li>
       <li><b>Empaquetar:</b> lleva los productos a tu mesa (la del centro), <kbd>E</kbd> para dejarlos y <kbd>E</kbd> otra vez para cerrar la caja. Un pedido con varios productos necesita todos en la mesa.</li>
       <li><b>Expedición:</b> lleva la caja a la estantería de expedición, junto a la fachada, y pulsa <kbd>E</kbd> para registrarla. Desde ahí la coges para cargarla (y también la pueden llevar tus repartidores o drones).</li>
-      <li><b>Cargar y conducir:</b> sal por la puerta peatonal, <kbd>E</kbd> en la trasera de la furgoneta para cargar la caja y <kbd>E</kbd> en la puerta del conductor para subir. Ve al pin de color del destino y aparca en su círculo.</li>
+      <li><b>Cargar y conducir:</b> sal por la fachada abierta del almacén, <kbd>E</kbd> en la trasera de la furgoneta para cargar la caja y <kbd>E</kbd> en cualquiera de las dos puertas delanteras para subir (al bajar sales por el mismo lado). Ve al pin de color del destino y aparca en su círculo.</li>
       <li><b>Entregar:</b> <kbd>E</kbd> para bajarte, <kbd>E</kbd> en la trasera para sacar la caja y llévala hasta la puerta del destinatario. Allí, <kbd>E</kbd> para cobrar.</li>
       <li><b>Preparadores:</b> desde el nivel 4 puedes contratarlos (ordenador de la oficina → Equipo). Trabajan en su puesto del almacén: recogen productos del cajón de la cinta, empaquetan y dejan la caja en expedición. Nunca tocan lo que estás preparando tú.</li>
       <li><b>Derrape:</b> al volante y a buena velocidad, gira y mantén <kbd>Espacio</kbd>. Si derrapas más de medio segundo y sueltas sin chocar, ganas un turbo.</li>
       <li><b>Urgentes:</b> pagan más, pero tienen límite de tiempo. Si llegas tarde cobras menos, nunca pierdes dinero.</li>
       <li><b>Rachas:</b> encadena entregas a tiempo para ganar hasta un +32 % extra.</li>
+      <li><b>Mejoras:</b> en el ordenador, la aplicación Mejoras empieza por <i>Recomendadas</i>: lo que puedes comprar ya, lo que tienes casi al alcance (con lo que te falta) y lo próximo que se desbloquea. Cada categoría tiene su pestaña y un número con las que puedes comprar.</li>
       <li><b>Mejoras y empleados:</b> mejora el vehículo, el almacén y la empresa y contrata repartidores para que entreguen solos, todo desde el ordenador de la oficina.</li>
       <li><b>Ciudad y drones:</b> desbloquea barrios en el ordenador (Empresa); desde el nivel 8 puedes investigar los drones.</li>
     </ol>

@@ -61,8 +61,11 @@ export function renderGroundMap(city, wantedScale = STATIC_SCALE) {
   ctx.scale(scale, scale);
 
   drawRoads(ctx, city);
+  drawAsphaltWear(ctx, city);
   drawBlocks(ctx, city);
+  drawSidewalkJoints(ctx, city);
   drawRoadMarkings(ctx, city);
+  drawStreetFixtures(ctx, city);
   drawPlazas(ctx, city, false); // en 3D la fuente es un modelo
   for (const park of city.parks) drawPark(ctx, park, false);
   drawDepotLot(ctx, city.depot);
@@ -106,6 +109,151 @@ function drawBlocks(ctx, city) {
       ctx.fillStyle = 'rgba(40,110,50,0.13)';
       const spots = Math.round((w * h) / 520);
       for (let i = 0; i < spots; i++) ctx.fillRect(x + rng() * w, y + rng() * h, 4, 3);
+    }
+  }
+}
+
+/** Tramos de calle que existen: { x0, y0, x1, y1, w (px), horizontal }. */
+function openSegments(city) {
+  const list = [];
+  city.hRoads.forEach((road, j) => {
+    const y = (road.y + road.w / 2) * TILE;
+    city.cols.forEach((col, c) => {
+      if (city.segmentOpen.h(j, c)) list.push({ x0: col.x * TILE, y0: y, x1: (col.x + col.w) * TILE, y1: y, w: road.w * TILE, horizontal: true });
+    });
+  });
+  city.vRoads.forEach((road, k) => {
+    const x = (road.x + road.w / 2) * TILE;
+    city.rows.forEach((row, r) => {
+      if (city.segmentOpen.v(k, r)) list.push({ x0: x, y0: row.y * TILE, x1: x, y1: (row.y + row.h) * TILE, w: road.w * TILE, horizontal: false });
+    });
+  });
+  return list;
+}
+
+/** Solo 3D: rodadas más oscuras, parches de asfalto nuevo, grietas y manchas de aceite. */
+function drawAsphaltWear(ctx, city) {
+  const rng = createRng(4343);
+  for (const s of openSegments(city)) {
+    const len = s.horizontal ? s.x1 - s.x0 : s.y1 - s.y0;
+    // Rodadas: dos bandas por carril, donde pisan las ruedas
+    ctx.fillStyle = 'rgba(10,12,18,0.07)';
+    for (const lane of [-0.25, 0.25]) {
+      for (const wheel of [-0.09, 0.09]) {
+        const o = (lane + wheel) * s.w;
+        if (s.horizontal) ctx.fillRect(s.x0, s.y0 + o - 2.5, len, 5);
+        else ctx.fillRect(s.x0 + o - 2.5, s.y0, 5, len);
+      }
+    }
+    // Parches rectangulares de asfalto más nuevo (oscuro) o gastado (claro)
+    const patches = Math.floor(rng() * 3);
+    for (let i = 0; i < patches; i++) {
+      const along = rng() * Math.max(0, len - 40) + 10;
+      const across = (rng() - 0.5) * s.w * 0.6;
+      const pl = 14 + rng() * 26;
+      const pw = 8 + rng() * 12;
+      ctx.fillStyle = rng() < 0.6 ? 'rgba(20,22,30,0.16)' : 'rgba(255,255,255,0.05)';
+      if (s.horizontal) ctx.fillRect(s.x0 + along, s.y0 + across - pw / 2, pl, pw);
+      else ctx.fillRect(s.x0 + across - pw / 2, s.y0 + along, pw, pl);
+    }
+    // Grietas finas en zigzag
+    ctx.strokeStyle = 'rgba(12,14,20,0.28)';
+    ctx.lineWidth = 0.8;
+    const cracks = Math.floor(rng() * 3);
+    for (let i = 0; i < cracks; i++) {
+      let px = s.horizontal ? s.x0 + rng() * len : s.x0 + (rng() - 0.5) * s.w * 0.8;
+      let py = s.horizontal ? s.y0 + (rng() - 0.5) * s.w * 0.8 : s.y0 + rng() * len;
+      ctx.beginPath();
+      ctx.moveTo(px, py);
+      for (let k = 0; k < 5; k++) {
+        px += (rng() - 0.5) * 9;
+        py += (rng() - 0.5) * 9;
+        ctx.lineTo(px, py);
+      }
+      ctx.stroke();
+    }
+    // Mancha de aceite en algún tramo
+    if (rng() < 0.35) {
+      const along = rng() * len;
+      const across = (rng() < 0.5 ? -0.25 : 0.25) * s.w;
+      const cx = s.horizontal ? s.x0 + along : s.x0 + across;
+      const cy = s.horizontal ? s.y0 + across : s.y0 + along;
+      const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, 7);
+      g.addColorStop(0, 'rgba(8,10,14,0.3)');
+      g.addColorStop(1, 'rgba(8,10,14,0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(cx - 7, cy - 7, 14, 14);
+    }
+  }
+}
+
+/** Solo 3D: juntas de las baldosas de la acera (cuadrícula recortada al anillo de la acera) y bordillo. */
+function drawSidewalkJoints(ctx, city) {
+  for (const block of city.blocks) {
+    const x = block.ox * TILE;
+    const y = block.oy * TILE;
+    const w = block.w * TILE;
+    const h = block.h * TILE;
+    ctx.save();
+    roundRect(ctx, x - 5, y - 5, w + 10, h + 10, 8);
+    if (block.kind !== 'plaza') ctx.rect(x, y, w, h);
+    ctx.clip('evenodd');
+    ctx.strokeStyle = 'rgba(60,55,50,0.13)';
+    ctx.lineWidth = 0.6;
+    ctx.beginPath();
+    for (let gx = x - 5; gx <= x + w + 5; gx += 8) { ctx.moveTo(gx, y - 6); ctx.lineTo(gx, y + h + 6); }
+    for (let gy = y - 5; gy <= y + h + 5; gy += 8) { ctx.moveTo(x - 6, gy); ctx.lineTo(x + w + 6, gy); }
+    ctx.stroke();
+    ctx.restore();
+    // Sombra del bordillo sobre el asfalto (el bordillo en volumen lo pone props3d.js)
+    ctx.strokeStyle = 'rgba(8,10,16,0.22)';
+    ctx.lineWidth = 2.5;
+    roundRect(ctx, x - 8.2, y - 8.2, w + 16.4, h + 16.4, 10);
+    ctx.stroke();
+  }
+}
+
+/** Solo 3D: tapas de alcantarilla en el centro de los carriles y rejillas de desagüe junto al bordillo. */
+function drawStreetFixtures(ctx, city) {
+  const rng = createRng(5151);
+  const manhole = (cx, cy) => {
+    ctx.fillStyle = '#2f343d';
+    ctx.beginPath(); ctx.arc(cx, cy, 5.2, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = '#5a606b';
+    ctx.lineWidth = 0.9;
+    ctx.beginPath(); ctx.arc(cx, cy, 4.4, 0, Math.PI * 2); ctx.stroke();
+    ctx.lineWidth = 0.5;
+    ctx.beginPath();
+    for (let k = -3; k <= 3; k += 1.5) { ctx.moveTo(cx - 3.6, cy + k); ctx.lineTo(cx + 3.6, cy + k); }
+    ctx.stroke();
+  };
+  const grate = (cx, cy, horizontal) => {
+    const w = horizontal ? 9 : 3.6;
+    const h = horizontal ? 3.6 : 9;
+    ctx.fillStyle = '#272b33';
+    ctx.fillRect(cx - w / 2, cy - h / 2, w, h);
+    ctx.fillStyle = '#4a505b';
+    for (let k = -3; k <= 3; k += 1.5) {
+      if (horizontal) ctx.fillRect(cx + k - 0.3, cy - h / 2 + 0.5, 0.6, h - 1);
+      else ctx.fillRect(cx - w / 2 + 0.5, cy + k - 0.3, w - 1, 0.6);
+    }
+  };
+  for (const s of openSegments(city)) {
+    const len = s.horizontal ? s.x1 - s.x0 : s.y1 - s.y0;
+    if (len < 60) continue;
+    // Alcantarilla en mitad del tramo, en uno de los carriles
+    const along = len * (0.35 + rng() * 0.3);
+    const across = (rng() < 0.5 ? -0.25 : 0.25) * s.w;
+    if (s.horizontal) manhole(s.x0 + along, s.y0 + across);
+    else manhole(s.x0 + across, s.y0 + along);
+    // Rejillas pegadas al bordillo a ambos lados (el bordillo está a 7 px de la manzana)
+    for (const t of [0.22, 0.78]) {
+      for (const edge of [-1, 1]) {
+        const o = edge * (s.w / 2 - 9.5);
+        const a = len * t;
+        if (s.horizontal) grate(s.x0 + a, s.y0 + o, true);
+        else grate(s.x0 + o, s.y0 + a, false);
+      }
     }
   }
 }

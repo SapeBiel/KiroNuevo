@@ -8,11 +8,14 @@ import { ZONES } from '../config/zones.js';
 import { createRng } from '../core/random.js';
 import { layoutLots } from '../world/cityMap.js';
 import { houseLayout, villaLayout } from '../world/lotLayout.js';
-import { DOOR_HALF, OPENING_HEIGHT } from '../world/depotLayout.js';
+import { OPENING_HEIGHT } from '../world/depotLayout.js';
 import {
   getAwningTexture, getHazardTexture, getWallTextures, makeCanvas, makeDepotRoofTexture, makeDepotSignTexture, makeHelipadTexture,
-  makeSignTexture, toTexture,
+  makeSignTexture, toTexture, wallWindowLayout,
 } from './textures3d.js';
+import { roofTileTexture } from './materials3d.js';
+import { buildTreeMeshes } from './vegetation3d.js';
+import { crownGeometry } from './geometries3d.js';
 
 const HOUSE_ROOFS = ['#c8644f', '#5d6b82', '#8a5a44', '#5f8f6a', '#d9a441', '#7a5c8a'];
 const APARTMENT_WALLS = ['#e3d5c6', '#d6dce8', '#e8d3d9', '#d8e4d2'];
@@ -43,7 +46,8 @@ function makeUnitPrism() {
 }
 
 const beaconGeometry = new THREE.SphereGeometry(2.6, 8, 6);
-const bushGeometry = new THREE.IcosahedronGeometry(1, 1);
+// Arbusto de varios lóbulos (no una esfera); pocos triángulos porque hay muchos en las afueras
+const bushGeometry = crownGeometry(5, 4, 0);
 const HOUSE_WALLS = ['#efe6d6', '#f3dcc6', '#e1ebef', '#f1e8c6', '#eadbe3', '#dce8d4'];
 const DOOR_COLORS = ['#4a3b2f', '#2f4f7a', '#7a2f35', '#2f6b4f', '#3a3f47'];
 const sharedMaterials = new Map();
@@ -139,9 +143,89 @@ function wallGeometry(w, h, d, style) {
   return geometry;
 }
 
+const darkerHex = (hex, k = 0.72) => `#${new THREE.Color(hex).multiplyScalar(k).getHexString()}`;
+
 function dimmed(hex, locked) {
   if (!locked) return hex;
   return `#${new THREE.Color(hex).lerp(LOCKED_TINT, 0.62).getHexString()}`;
+}
+
+// ------------------------------------------------------------ Tejados ----
+
+const roofMaterials = new Map();
+/** Teja cerámica: textura de hiladas teñida con el color del tejado (compartida). */
+function roofMaterial(color, locked) {
+  const key = `${color}|${locked}`;
+  let material = roofMaterials.get(key);
+  if (!material) {
+    material = new THREE.MeshLambertMaterial({ color: dimmed(color, locked), map: roofTileTexture() });
+    roofMaterials.set(key, material);
+  }
+  return material;
+}
+
+const gableCache = new Map();
+/**
+ * Tejado a dos aguas con la cumbrera a lo largo de z y la base en y = 0. Grupo 0: faldones (UV en px / "tile",
+ * las hiladas de teja quedan paralelas al alero); grupo 1: hastiales y plano inferior.
+ */
+function gableRoofGeometry(w, h, d, tile = 24) {
+  const key = `${w.toFixed(1)}|${h.toFixed(1)}|${d.toFixed(1)}`;
+  let geometry = gableCache.get(key);
+  if (geometry) return geometry;
+  const hw = w / 2;
+  const hd = d / 2;
+  const slope = Math.hypot(hw, h);
+  const positions = [];
+  const uvs = [];
+  const tri = (a, b, c, ua, ub, uc) => {
+    positions.push(...a, ...b, ...c);
+    uvs.push(...ua, ...ub, ...uc);
+  };
+  const s = slope / tile;
+  const u0 = -hd / tile;
+  const u1 = hd / tile;
+  // Faldón izquierdo (mira a -x) y derecho (mira a +x)
+  tri([-hw, 0, -hd], [-hw, 0, hd], [0, h, hd], [u0, 0], [u1, 0], [u1, s]);
+  tri([-hw, 0, -hd], [0, h, hd], [0, h, -hd], [u0, 0], [u1, s], [u0, s]);
+  tri([hw, 0, hd], [hw, 0, -hd], [0, h, -hd], [u1, 0], [u0, 0], [u0, s]);
+  tri([hw, 0, hd], [0, h, -hd], [0, h, hd], [u1, 0], [u0, s], [u1, s]);
+  // Hastiales y plano inferior
+  tri([-hw, 0, hd], [hw, 0, hd], [0, h, hd], [0, 0], [1, 0], [0.5, 1]);
+  tri([hw, 0, -hd], [-hw, 0, -hd], [0, h, -hd], [0, 0], [1, 0], [0.5, 1]);
+  tri([-hw, 0, -hd], [hw, 0, -hd], [hw, 0, hd], [0, 0], [1, 0], [1, 1]);
+  tri([-hw, 0, -hd], [hw, 0, hd], [-hw, 0, hd], [0, 0], [1, 1], [0, 1]);
+  geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geometry.computeVertexNormals();
+  geometry.addGroup(0, 12, 0);
+  geometry.addGroup(12, 12, 1);
+  gableCache.set(key, geometry);
+  return geometry;
+}
+
+/**
+ * Junta en mallas por material todas las piezas sencillas de un edificio (pasa de decenas de llamadas de dibujo
+ * a unas pocas). Los letreros y calcomanías con material propio se dejan aparte.
+ */
+function mergeEntry(entry) {
+  const keep = [];
+  const pool = [];
+  for (const mesh of entry.meshes) (mesh.userData.own ? keep : pool).push(mesh);
+  if (pool.length < 2) return;
+  for (const mesh of pool) {
+    mesh.updateMatrix();
+    entry.group.remove(mesh);
+  }
+  const merged = mergeByMaterial(pool, true);
+  for (const mesh of merged) {
+    mesh.userData.shared = mesh.material;
+    mesh.userData.own = false;
+    mesh.userData.ownGeometry = true;
+    entry.group.add(mesh);
+  }
+  entry.meshes = [...keep, ...merged];
 }
 
 // ------------------------------------------------------- Construcción ----
@@ -179,7 +263,7 @@ export function buildCity(city) {
       for (const entry of entries) {
         for (const clone of entry.fadeCache.values()) clone.dispose();
         for (const mesh of entry.meshes) {
-          if (mesh.userData.own) mesh.geometry.dispose();
+          if (mesh.userData.own || mesh.userData.ownGeometry) mesh.geometry.dispose();
           if (mesh.userData.own || mesh.userData.ownMaterial) {
             const shared = mesh.userData.shared;
             for (const material of Array.isArray(shared) ? shared : [shared]) material.dispose();
@@ -244,6 +328,72 @@ function buildOne(b, locked, extraTextures, decor = false) {
     decal(width, width * 48 / 256, material, doorOffset, y, z, { flip: side < 0 });
   };
 
+  /**
+   * Alféizares y dinteles en 3D sobre los huecos de ventana de una caja de fachada (en las mismas posiciones
+   * que dibuja su textura). faces: 0 = +x, 1 = -x, 2 = +z, 3 = -z. Con "balconies", en la cara de la calle
+   * se añaden balcones con barandilla en una de cada dos ventanas a partir de la primera planta.
+   */
+  const windowTrim = (w, h, d, style, cx, y0, cz, { sill = '#e9e4d8', faces = [0, 1, 2, 3], balconies = false, lintel = true } = {}) => {
+    const layout = wallWindowLayout(style);
+    if (!layout.window) return;
+    const tex = getWallTextures(style);
+    const [wx, wy, ww, wh] = layout.window;
+    const floors = layout.rows * Math.max(1, Math.round(h / tex.tileH));
+    const ch = h / floors;
+    const faceDefs = [{ span: d, nx: 1, nz: 0 }, { span: d, nx: -1, nz: 0 }, { span: w, nx: 0, nz: 1 }, { span: w, nx: 0, nz: -1 }];
+    for (const fi of faces) {
+      const f = faceDefs[fi];
+      const cells = layout.cols * Math.max(1, Math.round(f.span / tex.tileW));
+      const cw = f.span / cells;
+      const winW = (ww / layout.cellW) * cw;
+      const street = f.nz === side;
+      for (let i = 0; i < cells; i++) {
+        const t = -f.span / 2 + (i + (wx + ww / 2) / layout.cellW) * cw;
+        for (let k = 0; k < floors; k++) {
+          const bottom = y0 + k * ch + ((layout.cellH - wy - wh) / layout.cellH) * ch;
+          const topY = y0 + k * ch + ((layout.cellH - wy) / layout.cellH) * ch;
+          const at = (out) => [cx + (f.nx ? f.nx * (w / 2 + out) : t), cz + (f.nz ? f.nz * (d / 2 + out) : t)];
+          const along = (len, depth) => (f.nx ? [depth, len] : [len, depth]);
+          if (balconies && street && k > 0 && i % 2 === 0) {
+            const [bx, bz] = at(2.2);
+            const [sw, sd] = along(winW + 5, 4.4);
+            box(sw, 0.8, sd, bx, bottom - 0.8, bz, '#d8d4cc'); // losa del balcón
+            const [rx, rz] = at(4.2);
+            const [rw, rd] = along(winW + 5, 0.4);
+            box(rw, 0.4, rd, rx, bottom + 3.4, rz, '#2f343c'); // pasamanos
+            for (let p = -1; p <= 1; p += 0.25) {
+              const [px, pz] = f.nx ? [rx, rz + p * (winW + 4.6) / 2] : [rx + p * (winW + 4.6) / 2, rz];
+              box(0.25, 3.4, 0.25, px, bottom, pz, '#2f343c'); // barrotes
+            }
+            continue;
+          }
+          const [sx, sz] = at(0.55);
+          const [lw, ld] = along(winW + 1.8, 1.2);
+          box(lw, 0.65, ld, sx, bottom - 0.65, sz, sill); // alféizar
+          if (lintel) {
+            const [tx, tz] = at(0.25);
+            const [tw, td] = along(winW + 1, 0.55);
+            box(tw, 0.55, td, tx, topY + 0.15, tz, sill); // dintel
+          }
+        }
+      }
+    }
+  };
+  /** Canalones en los aleros de un tejado a dos aguas y bajantes en las esquinas de la calle. */
+  const gutters = (cx, cz, eaveY, spanAcross, length, ridgeAlongZ, groundY) => {
+    const color = '#8f959e';
+    for (const s of [-1, 1]) {
+      const g = ridgeAlongZ
+        ? add(unitCylinder, plain(dimmed(color, locked)), cx + s * spanAcross / 2, eaveY - 0.6, cz, 0.85, length, 0.85)
+        : add(unitCylinder, plain(dimmed(color, locked)), cx, eaveY - 0.6, cz + s * spanAcross / 2, 0.85, length, 0.85);
+      if (ridgeAlongZ) g.rotation.x = Math.PI / 2;
+      else g.rotation.z = Math.PI / 2;
+      const px = ridgeAlongZ ? cx + s * spanAcross / 2 : cx + length / 2 - 1.5;
+      const pz = ridgeAlongZ ? cz + side * (length / 2 - 1.5) : cz + s * spanAcross / 2;
+      add(unitCylinder, plain(dimmed(color, locked)), px, (eaveY + groundY) / 2, pz, 0.5, eaveY - groundY, 0.5);
+    }
+  };
+
   const variant = b.variant;
   let top = 40;
 
@@ -259,16 +409,25 @@ function buildOne(b, locked, extraTextures, decor = false) {
       lawn();
       box(bw + 3, 3, bd + 3, bx, 1, bz, '#8f8679');
       walls(bw, h, bd, 'home', wallColor, '#d8cdb8', bx, 3, bz);
+      windowTrim(bw, h, bd, 'home', bx, 3, bz);
       box(bw + 5, 1.6, bd + 5, bx, h + 2.2, bz, '#f7f4ee');
-      const roof = add(unitPrism, plain(dimmed(roofColor, locked)), bx, h + 3, bz, bw + 9, roofH, bd + 9);
-      // La mitad de las casas tienen la cumbrera girada (fachada con faldón en vez de hastial)
-      if (variant % 4 >= 2) {
-        roof.rotation.y = Math.PI / 2;
-        roof.scale.set(bd + 9, roofH, bw + 9);
-      }
+      // Tejado de teja a dos aguas con alero; la mitad de las casas tienen la cumbrera girada
+      // (fachada con faldón en vez de hastial)
+      const turned = variant % 4 >= 2;
+      const roofW = bw + 9;
+      const roofD = bd + 9;
+      const roofMats = [roofMaterial(roofColor, locked), plain(dimmed(wallColor, locked))];
+      const roof = add(gableRoofGeometry(turned ? roofD : roofW, roofH, turned ? roofW : roofD), roofMats, bx, h + 3, bz);
+      if (turned) roof.rotation.y = Math.PI / 2;
+      // Remate de la cumbrera y canalones con bajantes
+      const ridge = add(unitCylinder, plain(dimmed(darkerHex(roofColor), locked)), bx, h + 3 + roofH, bz, 1.1, turned ? roofW : roofD, 1.1);
+      if (turned) ridge.rotation.z = Math.PI / 2;
+      else ridge.rotation.x = Math.PI / 2;
+      gutters(bx, bz, h + 3, turned ? roofD : roofW, turned ? roofW : roofD, !turned, 3);
       const chimneyX = bx + bw * 0.26;
       box(8, 18, 8, chimneyX, h + 8, bz - bd * 0.12, '#8a5a44');
-      box(10, 2, 10, chimneyX, h + 26, bz - bd * 0.12, '#4b4f57');
+      box(9.4, 1.4, 9.4, chimneyX, h + 25.4, bz - bd * 0.12, '#cfc6b8');
+      box(5, 2.4, 5, chimneyX, h + 26.8, bz - bd * 0.12, '#4b4f57');
       // Puerta con marco, porche con tejadillo y escalón
       box(19, 26, 1.4, doorOffset + bx, 3, front + side * 0.5, '#f7f4ee');
       box(13, 21, 1.6, doorOffset + bx, 3, front + side * 1.1, DOOR_COLORS[variant % DOOR_COLORS.length]);
@@ -317,9 +476,13 @@ function buildOne(b, locked, extraTextures, decor = false) {
       lawn();
       box(bw + 3, 3, bd + 3, 0, 1, bz, '#a7a29a');
       walls(bw, h, bd, 'home', '#f6f3ec', '#d9d4c8', 0, 3, bz);
+      windowTrim(bw, h, bd, 'home', 0, 3, bz, { sill: '#d9d4c8' });
       box(bw + 4, 3, bd + 4, 0, h + 3, bz, '#3d424b');
+      box(bw + 4.6, 0.8, bd + 4.6, 0, h + 5.8, bz, '#2c3036'); // albardilla del pretil
       walls(bw * 0.6, 22, bd * 0.7, 'home', '#ebe5d9', '#c9c3b6', -bw * 0.16, h + 6, bz - side * bd * 0.12);
+      windowTrim(bw * 0.6, 22, bd * 0.7, 'home', -bw * 0.16, h + 6, bz - side * bd * 0.12, { sill: '#d9d4c8' });
       box(bw * 0.6 + 4, 2.5, bd * 0.7 + 4, -bw * 0.16, h + 28, bz - side * bd * 0.12, '#3d424b');
+      box(bw * 0.6 + 4.6, 0.7, bd * 0.7 + 4.6, -bw * 0.16, h + 30.5, bz - side * bd * 0.12, '#2c3036');
       // Terraza con barandilla de cristal sobre la planta baja
       const railZ = front - side * 1;
       box(bw * 0.36, 5, 0.8, bw * 0.3, h + 6, railZ, '#9fd0e8');
@@ -349,9 +512,18 @@ function buildOne(b, locked, extraTextures, decor = false) {
     case 'apartment': {
       const h = 92;
       walls(fw, h, fd, 'flats', APARTMENT_WALLS[variant % APARTMENT_WALLS.length], '#9aa0aa');
+      windowTrim(fw, h, fd, 'flats', 0, 0, 0, { balconies: true, lintel: false });
+      // Bajo comercial más oscuro, pretil con albardilla y cubierta con casetón, depósitos y antenas
+      box(fw + 0.8, 10, fd + 0.8, 0, 0, 0, '#8d8579');
       box(fw + 3, 3, fd + 3, 0, h, 0, '#8d95a3');
+      box(fw + 3.6, 0.8, fd + 3.6, 0, h + 3, 0, '#6f7682');
       box(28, 14, 22, fw * 0.25, h + 3, fd * 0.15, '#c1c8d6');
-      for (let i = 0; i < 3; i++) box(12, 7, 10, -fw * 0.3 + i * 18, h + 3, -fd * 0.2, '#a9b4c6');
+      box(30, 1.2, 24, fw * 0.25, h + 17, fd * 0.15, '#8d95a3');
+      for (let i = 0; i < 3; i++) {
+        add(unitCylinder, plain(dimmed('#a9b4c6', locked)), -fw * 0.3 + i * 18, h + 8, -fd * 0.2, 5, 9, 5);
+        add(unitCylinder, plain(dimmed('#8e98aa', locked)), -fw * 0.3 + i * 18, h + 13, -fd * 0.2, 5.4, 1, 5.4);
+      }
+      add(unitCylinder, plain(dimmed('#59606e', locked)), -fw * 0.1, h + 14, fd * 0.3, 0.35, 22, 0.35); // antena
       door(20, 24);
       top = h + 17;
       break;
@@ -360,7 +532,10 @@ function buildOne(b, locked, extraTextures, decor = false) {
       const accent = AWNINGS[variant % AWNINGS.length];
       const h = 42;
       walls(fw, h, fd, 'shop', '#ffffff', accent);
+      windowTrim(fw, h, fd, 'shop', 0, 0, 0, { sill: '#cfc6b6', lintel: false });
       box(fw + 4, 4, fd + 4, 0, h, 0, accent);
+      box(fw + 5, 0.8, fd + 5, 0, h + 4, 0, darkerHex(accent)); // cornisa
+      box(fw + 1.6, 1, fd + 1.6, 0, 11, 0, '#d9d0bf'); // imposta sobre la planta baja
       const awningWidth = Math.min(fw - 10, 70);
       const awning = add(unitBox, awningMaterial(accent, locked), doorOffset, 27, side * (fd / 2 + 6), awningWidth, 3, 13);
       awning.rotation.x = 0.25 * side;
@@ -372,6 +547,9 @@ function buildOne(b, locked, extraTextures, decor = false) {
     case 'office': {
       const h = 90 + (variant % 3) * 20;
       walls(fw, h, fd, 'glass', '#a9c8e0', '#6e8fa8');
+      // Cantos de forjado que sobresalen del muro cortina y aletas verticales en las esquinas
+      for (let y = 20; y < h - 2; y += 20) box(fw + 1.2, 0.9, fd + 1.2, 0, y - 0.45, 0, '#7f97ab');
+      for (const sx of [-1, 1]) for (const sz of [-1, 1]) box(2.4, h, 2.4, sx * (fw / 2 - 0.6), 0, sz * (fd / 2 - 0.6), '#7f97ab');
       box(fw + 2, 3, fd + 2, 0, h, 0, '#5d7a91');
       box(30, 12, 24, -fw * 0.2, h + 3, fd * 0.1, '#8aa0b3');
       box(14, 8, 14, fw * 0.25, h + 3, -fd * 0.2, '#9fb2c2');
@@ -387,6 +565,11 @@ function buildOne(b, locked, extraTextures, decor = false) {
       walls(fw, baseH, fd, 'glass', '#9fb6cf', '#7d93aa');
       walls(fw - 32, midH, fd - 32, 'glass', '#b3c7dc', '#8ea5bd', 0, baseH, 0);
       walls(fw - 68, topH, fd - 68, 'glass', '#cfdeec', '#a6bad0', 0, baseH + midH, 0);
+      // Forjados vistos y coronación de cada cuerpo de la torre
+      for (const [tw, td, y0, th] of [[fw, fd, 0, baseH], [fw - 32, fd - 32, baseH, midH], [fw - 68, fd - 68, baseH + midH, topH]]) {
+        for (let y = y0 + 20; y < y0 + th - 2; y += 20) box(tw + 1.2, 0.9, td + 1.2, 0, y - 0.45, 0, '#7a8fa6');
+        box(tw + 1.8, 1.6, td + 1.8, 0, y0 + th - 0.4, 0, '#6d8299');
+      }
       const roofY = baseH + midH + topH;
       if (variant % 3 === 0 && !decor) {
         const texture = makeHelipadTexture();
@@ -434,8 +617,8 @@ function buildOne(b, locked, extraTextures, decor = false) {
     }
     case 'depot': {
       const h = 64;
-      // Fachada abierta: un gran hueco de carga por el que se ve el interior y se entra a pie por la puerta
-      // peatonal de la barandilla (el interior lo construye depotInterior3d.js con world/depotLayout.js)
+      // Fachada abierta: un gran hueco de carga por el que se ve el interior y se entra a pie por cualquier punto
+      // (el interior lo construye depotInterior3d.js con world/depotLayout.js)
       const wall = wallMaterial('depot', '#fff3c9', locked);
       const roof = plain(dimmed('#e8a000', locked));
       const faces = [wall, wall, roof, roof, wall, wall];
@@ -451,20 +634,8 @@ function buildOne(b, locked, extraTextures, decor = false) {
       box(fw, h - OPENING_HEIGHT, 3, 0, OPENING_HEIGHT, frontZ, '#fff3c9');
       box(fw + 0.5, 3, 3.6, 0, OPENING_HEIGHT - 3, frontZ, '#4b5563');
       for (const px of [-fw / 2 + 2, fw / 2 - 2]) box(4, OPENING_HEIGHT - 3, 4, px, 0, frontZ, '#d9dde4');
-      // Barandilla amarilla con la puerta peatonal en el centro (los vehículos no caben)
-      const gapL = doorOffset - DOOR_HALF;
-      const gapR = doorOffset + DOOR_HALF;
-      for (const [a, c] of [[-fw / 2, gapL], [gapR, fw / 2]]) {
-        const len = c - a;
-        if (len <= 1) continue;
-        box(len, 1.6, 1.8, (a + c) / 2, 8, frontZ, '#ffb703');
-        box(len, 1.1, 1.4, (a + c) / 2, 4, frontZ, '#ffb703');
-        for (let x = a + 1; x <= c - 1; x += Math.max(6, len / Math.max(1, Math.round(len / 14)))) {
-          box(1.4, 9.6, 1.4, x, 0, frontZ, '#1d2230');
-        }
-      }
-      for (const gx of [gapL, gapR]) add(unitCylinder, plain('#1d2230'), gx, 6, frontZ, 1.5, 12, 1.5);
-      box(DOOR_HALF * 2, 0.4, 4, doorOffset, 0.5, frontZ, '#ffb703'); // umbral de la puerta peatonal
+      // Sin valla: solo una franja amarilla en el suelo marca el borde de la nave (los vehículos no pasan de ahí)
+      box(fw - 8, 0.4, 3, 0, 0.5, frontZ, '#ffb703');
       // Rótulo con el nombre y el color de la empresa (se repinta en el sitio si el jugador los cambia)
       sign('', 50, 130, '', '', makeDepotSignTexture());
       top = h + 4;
@@ -479,6 +650,9 @@ function buildOne(b, locked, extraTextures, decor = false) {
   entry.box = {
     minX: b.centerX - fw / 2, maxX: b.centerX + fw / 2, minZ: b.centerY - fd / 2, maxZ: b.centerY + fd / 2, height: top,
   };
+  // Las piezas sueltas de cada edificio se juntan por material (las de las afueras se fusionan luego todas juntas;
+  // el almacén se deja como está porque su fachada usa una cara invisible y su rótulo se repinta)
+  if (!decor && b.kind !== 'depot') mergeEntry(entry);
   return entry;
 }
 
@@ -578,17 +752,21 @@ function pickWeighted(rng, weights) {
   return keys[keys.length - 1];
 }
 
-/** Fusiona mallas (ya con su matrixWorld calculada) en una malla por material. */
-function mergeByMaterial(meshes) {
+/**
+ * Fusiona mallas en una malla por material. Usa su matrixWorld (ya calculada) o, con "local", su matriz
+ * respecto al grupo padre (para juntar las piezas de un mismo edificio).
+ */
+function mergeByMaterial(meshes, local = false) {
   const buckets = new Map();
   const normalMatrix = new THREE.Matrix3();
   const v = new THREE.Vector3();
   for (const mesh of meshes) {
+    const matrix = local ? mesh.matrix : mesh.matrixWorld;
     const source = mesh.geometry.index ? mesh.geometry.toNonIndexed() : mesh.geometry;
     const position = source.attributes.position;
     const normal = source.attributes.normal;
     const uv = source.attributes.uv;
-    normalMatrix.getNormalMatrix(mesh.matrixWorld);
+    normalMatrix.getNormalMatrix(matrix);
     const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
     const ranges = Array.isArray(mesh.material) && source.groups.length
       ? source.groups.map((g) => [g.start, g.count, materials[g.materialIndex]])
@@ -597,12 +775,14 @@ function mergeByMaterial(meshes) {
       if (!material) continue;
       let bucket = buckets.get(material);
       if (!bucket) {
-        bucket = { p: [], n: [], u: [] };
+        bucket = { p: [], n: [], u: [], cast: false };
         buckets.set(material, bucket);
       }
+      // Proyecta sombra si alguna de sus piezas la proyectaba (las sueltas de las afueras no lo indican)
+      bucket.cast ||= local ? mesh.castShadow : true;
       const end = Math.min(position.count, start + count);
       for (let i = start; i < end; i++) {
-        v.fromBufferAttribute(position, i).applyMatrix4(mesh.matrixWorld);
+        v.fromBufferAttribute(position, i).applyMatrix4(matrix);
         bucket.p.push(v.x, v.y, v.z);
         v.fromBufferAttribute(normal, i).applyMatrix3(normalMatrix).normalize();
         bucket.n.push(v.x, v.y, v.z);
@@ -620,7 +800,7 @@ function mergeByMaterial(meshes) {
     geometry.setAttribute('uv', new THREE.Float32BufferAttribute(bucket.u, 2));
     geometry.computeBoundingSphere();
     const mesh = new THREE.Mesh(geometry, material);
-    mesh.castShadow = true;
+    mesh.castShadow = bucket.cast;
     mesh.receiveShadow = true;
     merged.push(mesh);
   }
@@ -808,36 +988,8 @@ export function buildOutskirts(city) {
   for (const geometry of temporary) geometry.dispose();
 
   // Árboles de los parques exteriores
-  if (trees.length) {
-    const trunkGeometry = new THREE.CylinderGeometry(1.6, 2.2, 1, 6).translate(0, 0.5, 0);
-    const crownGeometry = new THREE.IcosahedronGeometry(1, 1);
-    const trunkMaterial = new THREE.MeshLambertMaterial({ color: '#6b4a32' });
-    const crownMaterial = new THREE.MeshLambertMaterial({ color: '#4aa85f', flatShading: true });
-    const trunks = new THREE.InstancedMesh(trunkGeometry, trunkMaterial, trees.length);
-    const crowns = new THREE.InstancedMesh(crownGeometry, crownMaterial, trees.length);
-    const dummy = new THREE.Object3D();
-    trees.forEach((tree, i) => {
-      const trunk = 8 + tree.r * 0.6;
-      dummy.position.set(tree.x, 1.5, tree.z);
-      dummy.rotation.set(0, 0, 0);
-      dummy.scale.set(1, trunk, 1);
-      dummy.updateMatrix();
-      trunks.setMatrixAt(i, dummy.matrix);
-      dummy.position.set(tree.x, 1.5 + trunk + tree.r * 0.55, tree.z);
-      dummy.rotation.set(0, i * 1.7, 0);
-      dummy.scale.set(tree.r, tree.r * 0.95, tree.r);
-      dummy.updateMatrix();
-      crowns.setMatrixAt(i, dummy.matrix);
-    });
-    for (const mesh of [trunks, crowns]) {
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-      mesh.instanceMatrix.needsUpdate = true;
-      group.add(mesh);
-    }
-    ownGeometries.push(trunkGeometry, crownGeometry);
-    ownMaterials.push(trunkMaterial, crownMaterial);
-  }
+  const treeHandle = buildTreeMeshes(trees, 1.5, { detail: 0 });
+  for (const mesh of treeHandle.meshes) group.add(mesh);
 
   return {
     group,
@@ -845,6 +997,7 @@ export function buildOutskirts(city) {
       for (const geometry of ownGeometries) geometry.dispose();
       for (const material of ownMaterials) material.dispose();
       dashTexture.dispose();
+      treeHandle.dispose();
     },
   };
 }

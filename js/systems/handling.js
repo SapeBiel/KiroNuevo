@@ -14,12 +14,12 @@ import { TUTORIAL_STEPS } from '../config/tutorial.js';
 import { beltPoint, depotLayout, isInsideDepot, isInsideOffice } from '../world/depotLayout.js';
 import { deliveryDoorPoint } from '../world/lotLayout.js';
 import { cargoSlotsUsed, compareOrders, completeDelivery, getOrder, playerCapacity } from './orders.js';
-import { enterVehicle, parkedVehicles, playerVehiclePoints, vehiclePoints } from './onFoot.js';
+import { enterVehicle, nearestDoor, parkedVehicles, playerVehiclePoints, vehiclePoints } from './onFoot.js';
 import { getPlayerVehicle } from './stats.js';
 
 export const REACH = 16; // px desde el borde de un mueble
 export const BELT_REACH = 17; // px desde el producto de la cinta
-export const VEHICLE_REACH = 15; // px desde la trasera o la puerta del conductor
+export const VEHICLE_REACH = 15; // px desde la trasera o desde cualquiera de las dos puertas delanteras
 export const DOOR_RADIUS = 20; // px desde el punto de entrega de la puerta
 export const TABLE_CAPACITY = 9; // volumen de productos que caben en la mesa del jugador
 
@@ -369,12 +369,14 @@ function rearAction(game) {
   return info('Zona de carga vacía');
 }
 
-function cabAction(game, vehicle, own) {
+/** Puerta delantera de un vehículo; side = 'left' (conductor) o 'right' (acompañante, se pasa al volante). */
+function cabAction(game, vehicle, own, side = 'left') {
   const type = getVehicleType(vehicle.typeId);
   if (!handsEmpty(game)) return info('Deja lo que llevas antes de conducir');
-  if (own) return action('enter', `Subir a ${type.name.toLowerCase()}`, () => enterVehicle(game));
+  const by = side === 'right' ? ' (puerta derecha)' : '';
+  if (own) return action('enter', `Subir a ${type.name.toLowerCase()}${by}`, () => enterVehicle(game, vehicle.id, side));
   if (game.state.player.cargo.length) return info('Descarga primero las cajas de tu vehículo para cambiar');
-  return action('switch', `Conducir ${type.name.toLowerCase()}`, () => enterVehicle(game, vehicle.id));
+  return action('switch', `Conducir ${type.name.toLowerCase()}${by}`, () => enterVehicle(game, vehicle.id, side));
 }
 
 function computerAction(game) {
@@ -432,19 +434,26 @@ export function getFootAction(game) {
     }
   }
 
-  // Vehículo propio: trasera y puerta del conductor
+  // Vehículo propio: trasera y las dos puertas delanteras (conductor y acompañante)
   const own = playerVehiclePoints(game);
   const dRear = distance(f.x, f.y, own.rear.x, own.rear.y);
   if (dRear <= VEHICLE_REACH) consider(dRear, own.rear, () => rearAction(game));
-  const dCab = distance(f.x, f.y, own.cab.x, own.cab.y);
-  if (dCab <= VEHICLE_REACH) consider(dCab, own.cab, () => cabAction(game, getPlayerVehicle(state), true));
+  // Una puerta solo cuenta si está del mismo lado de las paredes del almacén que la persona (son finas)
+  const playerInside = isInsideDepot(city.depot, f.x, f.y);
+  const reachableDoors = (points) => points.doors.filter((door) => isInsideDepot(city.depot, door.x, door.y) === playerInside);
+  for (const door of reachableDoors(own)) {
+    const d = distance(f.x, f.y, door.x, door.y);
+    if (d <= VEHICLE_REACH) consider(d, door, () => cabAction(game, getPlayerVehicle(state), true, door.side));
+  }
 
   // Otros vehículos aparcados y libres en el patio
   for (const parked of parkedVehicles(game)) {
     if (parked.vehicle.driver) continue;
-    const { cab } = vehiclePoints(parked.x, parked.y, parked.angle, getVehicleType(parked.vehicle.typeId));
-    const d = distance(f.x, f.y, cab.x, cab.y);
-    if (d <= VEHICLE_REACH) consider(d, cab, () => cabAction(game, parked.vehicle, false));
+    const points = vehiclePoints(parked.x, parked.y, parked.angle, getVehicleType(parked.vehicle.typeId));
+    for (const door of reachableDoors(points)) {
+      const d = distance(f.x, f.y, door.x, door.y);
+      if (d <= VEHICLE_REACH) consider(d, door, () => cabAction(game, parked.vehicle, false, door.side));
+    }
   }
 
   // Puerta del destinatario
@@ -507,6 +516,9 @@ export function getFootGuide(game) {
   const inside = isInsideDepot(depot, f.x, f.y);
   const nearDepot = inside || distance(f.x, f.y, depot.zoneCenter.x, depot.zoneCenter.y) <= DEPOT_RADIUS;
   const points = playerVehiclePoints(game);
+  // Se guía a la puerta delantera más cercana (de las que están del mismo lado de las paredes del almacén)
+  const sameSide = points.doors.filter((door) => isInsideDepot(depot, door.x, door.y) === inside);
+  const cabDoor = nearestDoor(sameSide.length ? { doors: sameSide } : points, f.x, f.y);
   const hands = handsOf(game);
   const target = (point, kind, color, label) => ({ x: point.x, y: point.y, kind, color, label });
   const rackFront = { x: L.rack.stand.x, y: L.rack.stand.y };
@@ -539,7 +551,7 @@ export function getFootGuide(game) {
     const vehicleNearDoor = distance(p.x, p.y, door.x, door.y) < 170;
     if (vehicleNearDoor) return { text: `Saca la caja ${orderTag(cargoOrder)} de la trasera del vehículo`, target: target(points.rear, 'vehicle', ORDER_KINDS[cargoOrder.kind].color, 'Vehículo') };
     if (!nearDepot || (!nextPick(game) && !rackBoxes(state).length)) {
-      return { text: 'Sube al vehículo (puerta del conductor) y conduce hasta el destino', target: target(points.cab, 'vehicle', '#ffd166', 'Vehículo') };
+      return { text: 'Sube al vehículo (por cualquiera de las puertas delanteras) y conduce hasta el destino', target: target(cabDoor, 'vehicle', '#ffd166', 'Vehículo') };
     }
   }
   if (nearDepot) {
@@ -555,7 +567,7 @@ export function getFootGuide(game) {
     if (rackBoxes(state).length) {
       return { text: 'Hay cajas listas en expedición: cógelas y cárgalas en el vehículo', target: target(rackFront, 'rack', '#ffb703', 'Expedición') };
     }
-    if (p.cargo.length) return { text: 'Sube al vehículo (puerta del conductor) y conduce hasta el destino', target: target(points.cab, 'vehicle', '#ffd166', 'Vehículo') };
+    if (p.cargo.length) return { text: 'Sube al vehículo (por cualquiera de las puertas delanteras) y conduce hasta el destino', target: target(cabDoor, 'vehicle', '#ffd166', 'Vehículo') };
     // Tutorial: las mejoras solo se compran desde la oficina
     const tutorial = state.tutorial;
     if (!tutorial.done && TUTORIAL_STEPS[tutorial.step]?.id === 'upgrade' && !isInsideOffice(depot, f.x, f.y)) {
@@ -563,5 +575,5 @@ export function getFootGuide(game) {
     }
     return null;
   }
-  return { text: 'Vuelve a tu vehículo', target: target(points.cab, 'vehicle', '#ffd166', 'Vehículo') };
+  return { text: 'Vuelve a tu vehículo', target: target(cabDoor, 'vehicle', '#ffd166', 'Vehículo') };
 }

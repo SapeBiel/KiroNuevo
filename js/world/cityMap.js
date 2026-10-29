@@ -429,7 +429,7 @@ function generateCity(seed, allowMerges) {
           startX: x + pw / 2 - 4.5 * TILE,
           startY: dropY,
         };
-        // Paredes, barandilla de la fachada, estanterías, mesa y zona de expedición
+        // Paredes, límite de la fachada para los vehículos, estanterías, mesa y zona de expedición
         for (const rect of depotColliders(depot)) addRectCollider(rect);
         depot.park = playerParkSpot(depot);
         depot.walkStart = depotLayout(depot).walkStart;
@@ -573,7 +573,7 @@ function generateCity(seed, allowMerges) {
 
   /**
    * ¿Un círculo choca contra algún obstáculo (edificio, árbol, límite del mapa o zona bloqueada)?
-   * Con { walker: true } se comprueba para una persona: puede cruzar la puerta peatonal del almacén.
+   * Con { walker: true } se comprueba para una persona: puede cruzar la fachada abierta del almacén.
    */
   function circleHitsSolid(cx, cy, radius, { walker = false } = {}) {
     if (circleHitsTree(cx, cy, radius) || circleHitsRect(cx, cy, radius, walker)) return true;

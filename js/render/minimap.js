@@ -46,7 +46,11 @@ export function drawMinimap(canvas, game, staticCanvas, camera) {
   ctx.strokeRect(depot.centerX * sx - 4, depot.centerY * sy - 4, 8, 8);
 
   // Empleados y drones
-  for (const rt of Object.values(game.runtime.workers)) if (rt.phase !== 'idle') dot(rt.x, rt.y, 2.5, '#46c28e');
+  for (const rt of Object.values(game.runtime.workers)) {
+    if (rt.phase === 'idle') continue;
+    const at = rt.walker ?? rt; // a pie (almacén o puerta del cliente) o en su furgoneta
+    dot(at.x, at.y, 2.5, '#46c28e');
+  }
   for (const rt of Object.values(game.runtime.drones)) if (rt.phase === 'outbound' || rt.phase === 'inbound') dot(rt.x, rt.y, 2.5, '#8ecae6');
 
   // Jugador (a pie: la persona, y el vehículo aparcado como un cuadrado)

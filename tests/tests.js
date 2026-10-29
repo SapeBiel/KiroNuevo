@@ -10,11 +10,17 @@ import { ZONE_ORDER } from '../js/config/zones.js';
 import { UPGRADES } from '../js/config/upgrades.js';
 import { ACHIEVEMENTS } from '../js/config/achievements.js';
 import { getLevelUnlocks, xpToNextLevel } from '../js/config/levels.js';
-import { createOrder, completeDelivery, getOrder, cargoSlotsUsed, loadBest, deliverNearby } from '../js/systems/orders.js';
+import {
+  createOrder, completeDelivery, getOrder, cargoSlotsUsed, loadBest, deliverNearby, describeOrderStatus,
+} from '../js/systems/orders.js';
+import { drawOrdersBoard } from '../js/render3d/depotInterior3d.js';
+import { renderUpgradesPanel, upgradesUiState } from '../js/ui/panels/upgradesPanel.js';
+import { formatDuration, pad } from '../js/core/util.js';
 import {
   awaitingPacking, getFootAction, loadIntoVehicle, packOrder, placeOnTable, rackBoxes, storeOnRack, takeFromRack, takeItem,
 } from '../js/systems/handling.js';
-import { GRAVITY, JUMP_SPEED, exitVehicle, playerVehiclePoints } from '../js/systems/onFoot.js';
+import { GRAVITY, JUMP_SPEED, exitVehicle, parkedVehicles, playerVehiclePoints, vehicleOnRoad } from '../js/systems/onFoot.js';
+import { courierLoad, reservedOnRack } from '../js/systems/workers.js';
 import { BELT_WIDTH, beltPoint, depotColliders, depotLayout, isInsideDepot } from '../js/world/depotLayout.js';
 import { depotPath } from '../js/world/depotNav.js';
 import { SIGN_SHOW_DISTANCE, nearestLockedZone, signOpacity } from '../js/world/zoneBorder.js';
@@ -378,17 +384,20 @@ test('Entrega rápida interna (simulación y automatización): cobra una vez y e
   assert(deliverNearby(game).length === 0 && completeDelivery(game, order, { type: 'player' }) === null, 'Segundo pago permitido');
 });
 
-test('A pie: la puerta peatonal del almacén deja pasar a las personas, no a los vehículos', () => {
+test('A pie: la fachada abierta del almacén deja pasar a las personas, no a los vehículos', () => {
   const game = fresh({}, { foot: true });
   const L = depotLayout(game.city.depot);
   const y = (L.inner.y1 + L.outer.y1) / 2;
-  assert(!game.city.circleHitsSolid(L.doorX, y, 4.5, { walker: true }), 'La persona no cabe por la puerta');
-  assert(game.city.circleHitsSolid(L.doorX, y, 10), 'Un vehículo no debería caber por la puerta');
-  assert(game.city.circleHitsSolid(L.doorX + 40, y, 4.5, { walker: true }), 'La barandilla debería frenar a la persona');
-  // Andar de verdad hacia la puerta desde dentro
+  // Ya no hay valla: la persona cruza la fachada por cualquier punto y los vehículos por ninguno
+  for (const dx of [0, 40, -80, 110]) {
+    assert(!game.city.circleHitsSolid(L.doorX + dx, y, 4.5, { walker: true }), `La persona no pasa por la fachada (${dx})`);
+    assert(game.city.circleHitsSolid(L.doorX + dx, y, 10), `Un vehículo no debería entrar en la nave (${dx})`);
+  }
+  // Andar de verdad hacia fuera desde dentro, lejos del centro de la fachada
   const f = game.state.player.foot;
+  const exitX = L.doorX - 40;
   game.controls.walkX = 0; game.controls.walkY = 1;
-  for (let i = 0; i < 60; i++) { game.controls.walkX = (L.doorX - f.x) * 0.2; game.controls.walkY = 1; game.update(0.05); }
+  for (let i = 0; i < 60; i++) { game.controls.walkX = (exitX - f.x) * 0.2; game.controls.walkY = 1; game.update(0.05); }
   assert(f.y > L.outer.y1, `No salió del almacén (y=${f.y.toFixed(1)})`);
   assert(game.state.player.speed === 0, 'El vehículo no se mueve mientras se va a pie');
 });
@@ -656,6 +665,29 @@ test('Bajar del vehículo: hay que frenar antes, y no se sube con las manos ocup
   assert(!game.enterVehicle().ok, 'No se debe subir con una caja en las manos');
 });
 
+test('Subir al vehículo por los dos lados: puerta del conductor y del acompañante', () => {
+  const game = fresh();
+  const { state } = game;
+  assert(exitVehicle(game).ok, 'No se bajó');
+  let points = playerVehiclePoints(game);
+  assert(points.doors.length === 2 && points.cabRight, 'Faltan las dos puertas delanteras');
+  // Puerta derecha (acompañante)
+  standAt(game, points.cabRight.x, points.cabRight.y, state.player.x, state.player.y);
+  const action = getFootAction(game);
+  assert(action?.kind === 'enter' && action.label.includes('derecha'), `La puerta derecha no ofrece subir: ${action?.label}`);
+  assert(game.interact().kind === 'enter' && state.player.mode === 'drive', 'No subió por la puerta derecha');
+  // Se baja por el mismo lado por el que subió
+  assert(exitVehicle(game).ok, 'No se bajó tras subir por la derecha');
+  points = playerVehiclePoints(game);
+  const f = state.player.foot;
+  const dRight = Math.hypot(f.x - points.cabRight.x, f.y - points.cabRight.y);
+  const dLeft = Math.hypot(f.x - points.cab.x, f.y - points.cab.y);
+  assert(dRight < dLeft, 'Debería bajarse por la puerta derecha');
+  // Puerta izquierda (conductor) sigue funcionando
+  standAt(game, points.cab.x, points.cab.y, state.player.x, state.player.y);
+  assert(game.interact().kind === 'enter' && state.player.mode === 'drive', 'No subió por la puerta del conductor');
+});
+
 test('Capacidad: la carga está limitada por los huecos del vehículo', () => {
   const game = fresh();
   for (let i = 0; i < 6; i++) readyOrder(game);
@@ -828,6 +860,59 @@ test('Economía: no se compra sin fondos ni sin requisitos', () => {
   assert(!game.buyUpgrade('droneProgram').ok, 'Drones sin la sede requerida');
 });
 
+test('Pantalla de la puerta: lista todos los pedidos, urgentes primero, con estado y cuenta atrás', () => {
+  const game = fresh({}, { foot: true });
+  unlockAll(game);
+  const urgent = createOrder(game, { kind: 'urgent', instantReady: true });
+  assert(urgent && urgent.timeLeft > 0, 'No se pudo crear el pedido urgente');
+  const canvas = document.createElement('canvas');
+  canvas.width = 1024; canvas.height = 320;
+  const ctx = canvas.getContext('2d');
+  const written = [];
+  const fillText = ctx.fillText.bind(ctx);
+  ctx.fillText = (value, x, y) => { written.push(String(value)); fillText(value, x, y); };
+  drawOrdersBoard(ctx, game);
+  const rowOf = (order) => written.indexOf(`#${pad(order.number)}`);
+  for (const order of game.state.orders) {
+    assert(rowOf(order) >= 0, `Falta el pedido #${pad(order.number)} en la pantalla`);
+    const status = describeOrderStatus(game, order).text;
+    assert(written.some((t) => t.startsWith(status.slice(0, 8))), `Falta el estado «${status}»`);
+  }
+  assert(rowOf(urgent) < Math.min(...game.state.orders.filter((o) => o !== urgent).map(rowOf)), 'El urgente debe salir el primero');
+  assert(written.includes(formatDuration(urgent.timeLeft)), 'Falta la cuenta atrás del urgente');
+  assert(describeOrderStatus(game, urgent).text === 'Listo en expedición', 'Un pedido listo debe salir en expedición');
+  // Si no caben todos, la última fila dice cuántos faltan
+  for (let i = 0; i < 8; i++) createOrder(game, { kind: 'small', instantReady: true });
+  written.length = 0;
+  drawOrdersBoard(ctx, game);
+  assert(game.state.orders.length > 6 && written.some((t) => t.startsWith('+')), 'Con muchos pedidos debe indicar cuántos más hay');
+  // Sin pedidos
+  game.state.orders.length = 0;
+  written.length = 0;
+  drawOrdersBoard(ctx, game);
+  assert(written.some((t) => t.startsWith('Sin pedidos')), 'Sin pedidos debe decirlo');
+});
+
+test('Mejoras: la aplicación recomienda lo que se puede comprar y explica lo que falta', () => {
+  const tabs = ['recommended', 'vehicles', 'fleet', 'warehouse', 'business', 'tech'];
+  const render = (game, tab) => { upgradesUiState.category = tab; return renderUpgradesPanel(game); };
+  const rich = fresh({ money: 100000 });
+  const html = render(rich, 'recommended');
+  assert(html.includes('Puedes comprarlas ya') && html.includes('data-id="engine"'), 'Debe recomendar las mejoras que se pueden pagar');
+  assert(html.includes('Se desbloquean pronto') && html.includes('data-id="handling"'), 'Debe avisar de las que se desbloquean al subir de nivel');
+  assert(html.includes('class="count"'), 'Las pestañas deben contar las compras posibles');
+  const poor = fresh({ money: 0 });
+  const poorHtml = render(poor, 'recommended');
+  assert(poorHtml.includes('Casi al alcance') && poorHtml.includes('te faltan'), 'Sin dinero debe decir cuánto falta');
+  // En cada categoría: completadas aparte y cada pestaña se pinta
+  rich.state.upgrades.engine = UPGRADES.engine.maxLevel; rich.recomputeStats();
+  const vehicles = render(rich, 'vehicles');
+  assert(vehicles.includes('Completadas') && vehicles.includes('Motor mejorado · ✓'), 'Las completadas van aparte');
+  assert(render(rich, 'fleet').includes('data-action="buy-vehicle"'), 'La flota tiene su pestaña');
+  for (const tab of tabs) assert(render(rich, tab).includes('class="card upgrade'), `Pestaña vacía: ${tab}`);
+  upgradesUiState.category = 'recommended';
+});
+
 test('Mejoras: solo se compran a pie dentro de la oficina', () => {
   const game = fresh({ money: 100000 }, { foot: true, office: false });
   const o = depotLayout(game.city.depot).office;
@@ -981,6 +1066,56 @@ test('Repartidor: genera ingresos, usa su vehículo y cobra sueldo', () => {
   assert(worker.earned > 0 && game.state.stats.workerDeliveries === worker.delivered, 'Estadísticas del empleado');
   assert(game.state.money > money0 - 2000, 'Los ingresos no compensan');
   assert(game.state.stats.expenses.fuel > 0, 'Sin gasto de combustible');
+});
+
+test('Repartidor: baja de su furgoneta, coge la caja en expedición, la carga, sale y la lleva a la puerta', () => {
+  const game = companyReady();
+  assert(game.buyUpgrade('garage').ok && game.buyVehicle('van_basic').ok, 'Compra de vehículo');
+  const worker = game.hireWorker('courier').worker;
+  game.state.player.x = game.city.depot.startX;
+  game.state.orders.length = 0;
+  const order = readyOrder(game);
+  const building = game.city.getBuilding(order.buildingId);
+  const door = deliveryDoorPoint(building);
+  const depot = game.city.depot;
+  const L = depotLayout(depot);
+  const van = game.state.vehicles.find((v) => v.driver === worker.id);
+  const seen = {};
+  for (let t = 0; t < 150 && !seen.delivered; t += 0.05) {
+    game.update(0.05);
+    const rt = game.runtime.workers[worker.id];
+    if (!rt) continue;
+    const w = rt.walker;
+    const parked = parkedVehicles(game).some((p) => p.vehicle === van);
+    if (w && rt.atSpot) {
+      seen.walkedFromVan = true;
+      assert(parked, 'Mientras va a pie por el almacén, su furgoneta sigue aparcada en el patio');
+    }
+    if (w && isInsideDepot(depot, w.x, w.y)) {
+      seen.inside = true;
+      if (w.y < L.inner.y1 - 1) {
+        assert(!game.city.circleHitsSolid(w.x, w.y, 1, { walker: true }), `El repartidor se metió en un obstáculo (${w.x.toFixed(1)}, ${w.y.toFixed(1)}, ${rt.phase})`);
+      }
+    }
+    if (rt.phase === 'walking' && rt.after === 'pickBoxes') {
+      assert(reservedOnRack(game).includes(order), 'La caja debe seguir en la estantería hasta que la coja');
+      seen.waitedOnRack = true;
+    }
+    if (rt.phase === 'pickBoxes') seen.picking = Math.hypot(w.x - L.rack.stand.x, w.y - L.rack.stand.y) < 2;
+    if (courierLoad(game, worker).includes(order) && rt.atSpot) seen.carried = true;
+    if (rt.phase === 'loadVan') seen.loading = true;
+    if (rt.phase === 'departing') seen.departing = true;
+    if (vehicleOnRoad(rt) && !w && rt.phase === 'driving') { seen.drove = true; assert(!parked, 'En ruta no puede estar también aparcada'); }
+    if (rt.phase === 'handOver') seen.atDoor = Math.hypot(w.x - door.x, w.y - door.y) < 2 && courierLoad(game, worker).includes(order);
+    if (!game.state.orders.includes(order)) seen.delivered = true;
+  }
+  for (const key of ['walkedFromVan', 'inside', 'waitedOnRack', 'picking', 'carried', 'loading', 'departing', 'drove', 'atDoor', 'delivered']) {
+    assert(seen[key], `El repartidor no hizo el paso «${key}»: ${JSON.stringify(seen)}`);
+  }
+  assert(worker.delivered === 1, 'La entrega debe contar para el repartidor');
+  // Vuelve y aparca en su plaza
+  for (let t = 0; t < 120 && game.runtime.workers[worker.id].phase !== 'idle'; t += 0.05) game.update(0.05);
+  assert(game.runtime.workers[worker.id].phase === 'idle' && parkedVehicles(game).some((p) => p.vehicle === van), 'No volvió a su plaza');
 });
 
 test('Fin de jornada: cobra sueldos y mantenimiento y muestra el resumen', () => {
