@@ -9,7 +9,7 @@ export const WORKER_TYPES = {
   picker: {
     id: 'picker', name: 'Preparador de pedidos', icon: '🧑‍🏭', unlockLevel: 4,
     cost: 450, salary: 40, costGrowth: 1.35, needsVehicle: false, max: 6,
-    description: 'Añade una línea de preparación y acelera un 15 % el empaquetado de pedidos.',
+    description: 'Trabaja en su puesto del almacén: recoge los productos de la cinta, los empaqueta y deja la caja en expedición. Cada uno acelera un 15 % el empaquetado. Hasta 6 puestos.',
   },
   manager: {
     id: 'manager', name: 'Encargado de logística', icon: '🧑‍💼', unlockLevel: 6,

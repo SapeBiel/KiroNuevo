@@ -5,7 +5,9 @@ import { UPGRADES } from '../config/upgrades.js';
 import { formatMoney, distance } from '../core/util.js';
 import { allocateId } from '../core/state.js';
 import { spend, rewardPreview } from './economy.js';
-import { completeDelivery, compareOrders, isAvailableForAutomation } from './orders.js';
+import {
+  completeDelivery, compareOrders, isAvailableForAutomation, droneCanReach, automationIdleReason,
+} from './orders.js';
 
 export function droneCost(state, typeId) {
   const type = DRONE_TYPES[typeId];
@@ -56,14 +58,14 @@ export function getDroneRuntime(game, drone) {
   return rt;
 }
 
+/** ¿Este tipo de dron puede llevar el pedido? (tamaño, destino apto y dentro de su autonomía) */
+function droneCanTake(game, type, order) {
+  return order.kind !== 'fragile' && order.slots <= type.capacity
+    && droneCanReach(game.city, type, game.city.getBuilding(order.buildingId));
+}
+
 function pickOrder(game, type) {
-  const { state, city } = game;
-  const depot = city.depot;
-  const candidates = state.orders.filter((o) => {
-    if (o.kind === 'fragile' || o.slots > type.capacity || !isAvailableForAutomation(game, o)) return false;
-    const b = city.getBuilding(o.buildingId);
-    return b.droneOk && distance(depot.centerX, depot.centerY, b.centerX, b.centerY) <= type.range;
-  });
+  const candidates = game.state.orders.filter((o) => isAvailableForAutomation(game, o) && droneCanTake(game, type, o));
   candidates.sort((a, b) => compareOrders(a, b) || rewardPreview(game, b) - rewardPreview(game, a));
   return candidates[0] ?? null;
 }
@@ -84,7 +86,10 @@ export function updateDrones(game, dt) {
         if (rt.scanTimer > 0) break;
         rt.scanTimer = 0.6;
         const order = pickOrder(game, type);
-        if (!order) { rt.status = 'Esperando pedidos'; break; }
+        if (!order) {
+          rt.status = automationIdleReason(game, (o) => droneCanTake(game, type, o));
+          break;
+        }
         order.assignedTo = drone.id;
         order.status = 'picked';
         rt.order = order;

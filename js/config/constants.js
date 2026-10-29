@@ -6,7 +6,7 @@ export const TILE = 32; // tamaño de una casilla en píxeles
 export const CITY_BLOCKS_X = 11; // columnas de manzanas
 export const CITY_BLOCKS_Y = 8; // filas de manzanas
 export const DEFAULT_CITY_SEED = 20240607; // semilla de las pruebas automáticas
-export const CITY_LAYOUT_VERSION = 2; // sube si cambia el generador: las partidas viejas se recolocan
+export const CITY_LAYOUT_VERSION = 3; // sube si cambia el generador: las partidas viejas se recolocan (3: almacén más grande)
 
 export const METERS_PER_TILE = 12; // para mostrar distancias en metros
 

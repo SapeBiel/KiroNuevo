@@ -32,7 +32,8 @@ export function drawMinimap(canvas, game, staticCanvas, camera) {
   // Pedidos pendientes y cargados
   for (const order of state.orders) {
     const b = city.getBuilding(order.buildingId);
-    const loaded = order.assignedTo === 'player';
+    // Destacados: los que van en el vehículo o en las manos (no los que aún se están reuniendo)
+    const loaded = state.player.cargo.includes(order.id) || state.player.hands.box === order.id;
     dot(b.dropX, b.dropY, loaded ? 4 : 2.2, loaded ? ORDER_KINDS[order.kind].color : 'rgba(255,255,255,0.8)', loaded);
   }
 
@@ -48,8 +49,15 @@ export function drawMinimap(canvas, game, staticCanvas, camera) {
   for (const rt of Object.values(game.runtime.workers)) if (rt.phase !== 'idle') dot(rt.x, rt.y, 2.5, '#46c28e');
   for (const rt of Object.values(game.runtime.drones)) if (rt.phase === 'outbound' || rt.phase === 'inbound') dot(rt.x, rt.y, 2.5, '#8ecae6');
 
-  // Jugador
-  const p = state.player;
+  // Jugador (a pie: la persona, y el vehículo aparcado como un cuadrado)
+  if (game.onFoot) {
+    ctx.fillStyle = '#ffd166';
+    ctx.strokeStyle = '#111';
+    ctx.lineWidth = 1;
+    ctx.fillRect(state.player.x * sx - 2.5, state.player.y * sy - 2.5, 5, 5);
+    ctx.strokeRect(state.player.x * sx - 2.5, state.player.y * sy - 2.5, 5, 5);
+  }
+  const p = game.getFocus();
   ctx.save();
   ctx.translate(p.x * sx, p.y * sy);
   ctx.rotate(p.angle);

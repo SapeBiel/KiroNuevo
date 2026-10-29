@@ -28,3 +28,9 @@
 - Lógica: `js/systems/streetLamps.js` (runtime.brokenLamps Map índice→{age,dirX,dirY,rising}; 10 s; caída 0.55 s; se levanta 0.8 s; espera si el coche está encima). Llamado desde updatePlayerVehicle tras el movimiento. Evento `lampHit`. Frena ×0.94.
 - 3D: props3d buildLamps().update(broken, lampPose) (poste gira sobre su base, bombilla oculta, muñón con frustumCulled=false). Luces reales saltan farolas rotas.
 - 2D: farolas ya no van en el mapa estático; renderer.drawLampPosts() cada fotograma; noche ignora rotas. Sonido 'lamp'.
+
+## Imagen de la empresa
+- Lógica: `js/systems/branding.js` (state.company {name, slogan, logo, primary, secondary, accent, fleetColors}; setCompany → evento `companyChanged`; sanitizeCompany en storage). Game.setCompany.
+- UI: ventana `brandingHtml` (modals.js) + vista previa `js/ui/brandPreview.js`; se abre desde el nombre de la barra (#btn-brand), panel Empresa (data-action edit-brand), Menú y bienvenida. main.js openBranding/updateBrand (título de la pestaña incluido).
+- 3D: vehicles3d setVehicleBranding (style.id = tipo@clave, libera texturas viejas; renderer3d.applyBranding recrea vehículos); textures3d setDepotBranding repinta tejado y rótulo del almacén en el sitio.
+- 2D: sprites.drawBrandMark (logo compartido), drawVehicle({stripe}), mapLayer renderStaticMap(city, company); renderer rebuildStatic en companyChanged.

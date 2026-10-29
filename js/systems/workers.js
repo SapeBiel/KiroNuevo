@@ -6,9 +6,10 @@ import { formatMoney, distance } from '../core/util.js';
 import { allocateId } from '../core/state.js';
 import { pointAlongRoute } from '../world/pathfinding.js';
 import { chargeFuel, spend } from './economy.js';
-import { completeDelivery, compareOrders, isAvailableForAutomation } from './orders.js';
+import { completeDelivery, compareOrders, isAvailableForAutomation, automationIdleReason } from './orders.js';
 import { getVehicleStats, countWorkers } from './stats.js';
 import { freeVehicles } from './fleet.js';
+import { releasePickerWork } from './warehouseStaff.js';
 
 export function hireCost(state, typeId) {
   const type = WORKER_TYPES[typeId];
@@ -76,6 +77,8 @@ export function fireWorker(game, workerId) {
   const { state } = game;
   const worker = state.workers.find((w) => w.id === workerId);
   if (!worker) return { ok: false, reason: 'Empleado inexistente' };
+  // Un preparador deja sus productos en el cajón de la cinta y su caja en expedición
+  if (worker.typeId === 'picker') releasePickerWork(game, workerId);
   releaseOrders(game, workerId);
   const vehicle = state.vehicles.find((v) => v.id === worker.vehicleId);
   if (vehicle) vehicle.driver = null;
@@ -160,15 +163,36 @@ function planTrip(game, capacity) {
   return chosen;
 }
 
+/**
+ * Vehículo del repartidor. Si no tiene (partida antigua, vehículo liberado...) coge el libre con más
+ * capacidad; así no se queda parado en el almacén habiendo furgonetas aparcadas.
+ */
+function ensureWorkerVehicle(game, worker) {
+  const { state } = game;
+  const current = state.vehicles.find((v) => v.id === worker.vehicleId);
+  if (current && (current.driver === worker.id || !current.driver)) {
+    current.driver = worker.id;
+    return current;
+  }
+  worker.vehicleId = null;
+  const free = freeVehicles(state)
+    .sort((a, b) => getVehicleStats(state, b.typeId, game.derived).capacity - getVehicleStats(state, a.typeId, game.derived).capacity)[0];
+  if (!free) return null;
+  free.driver = worker.id;
+  delete free.park; // deja de estar aparcado donde lo dejó el jugador
+  worker.vehicleId = free.id;
+  return free;
+}
+
 export function updateWorkers(game, dt) {
   const { state, city, derived } = game;
   const depot = city.depot;
   for (const worker of state.workers) {
     if (!WORKER_TYPES[worker.typeId].needsVehicle) continue;
     const rt = getWorkerRuntime(game, worker);
-    const vehicle = state.vehicles.find((v) => v.id === worker.vehicleId);
+    const vehicle = ensureWorkerVehicle(game, worker);
     if (!vehicle) {
-      rt.status = 'Sin vehículo asignado';
+      rt.status = 'Sin vehículo: compra uno o deja libre alguno';
       continue;
     }
     const vstats = getVehicleStats(state, vehicle.typeId, derived);
@@ -177,10 +201,13 @@ export function updateWorkers(game, dt) {
     if (rt.phase === 'idle') {
       rt.x = depot.dropX; rt.y = depot.dropY; rt.angle = 0;
       rt.scanTimer -= dt;
-      if (rt.scanTimer > 0) { rt.status = 'Esperando pedidos'; continue; }
+      if (rt.scanTimer > 0) continue;
       rt.scanTimer = 0.6;
       const trip = planTrip(game, vstats.capacity);
-      if (!trip.length) { rt.status = 'Esperando pedidos'; continue; }
+      if (!trip.length) {
+        rt.status = automationIdleReason(game, (o) => o.kind !== 'fragile' && o.slots <= vstats.capacity);
+        continue;
+      }
       for (const order of trip) { order.assignedTo = worker.id; order.status = 'picked'; }
       rt.orders = trip;
       rt.phase = 'loading';
@@ -197,7 +224,10 @@ export function updateWorkers(game, dt) {
       waypoints.push({ x: depot.dropX, y: depot.dropY });
       const route = game.paths.routeThrough(waypoints);
       if (!route) {
+        // Sin camino: se aparta el pedido un rato para no reintentar el mismo viaje en bucle
+        for (const order of rt.orders) order.autoSkipUntil = state.time + 30;
         releaseOrders(game, worker.id);
+        rt.orders = [];
         rt.phase = 'idle';
         continue;
       }
@@ -221,6 +251,7 @@ export function updateWorkers(game, dt) {
           rt.route = null;
           rt.orders = [];
           rt.x = depot.dropX; rt.y = depot.dropY;
+          rt.scanTimer = 0; // busca el siguiente viaje en cuanto llega
           rt.status = 'Esperando pedidos';
         } else {
           rt.phase = 'dropping';

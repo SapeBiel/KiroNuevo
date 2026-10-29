@@ -65,8 +65,8 @@ export const UPGRADES = {
   prep: {
     id: 'prep', category: 'warehouse', name: 'Preparación más rápida', icon: '⏱️', maxLevel: 6,
     baseCost: 150, growth: 1.7, unlockLevel: 2,
-    description: 'Los pedidos nuevos se empaquetan más deprisa y están antes listos.',
-    describe: (l) => `+${pct(20 * l)} velocidad de preparación`,
+    description: 'Carros de mano y escáneres: tus preparadores empaquetan más deprisa y tú te mueves más rápido a pie por el almacén.',
+    describe: (l) => `+${pct(20 * l)} preparación · +${pct(6 * l)} velocidad a pie`,
   },
   organization: {
     id: 'organization', category: 'warehouse', name: 'Organización logística', icon: '🧭', maxLevel: 5,

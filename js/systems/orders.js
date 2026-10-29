@@ -4,6 +4,9 @@ import {
   TILE, METERS_PER_TILE, DROP_RADIUS, STREAK_WINDOW,
 } from '../config/constants.js';
 import { PACKAGES, ORDER_KINDS, KIND_ORDER } from '../config/packages.js';
+import { DRONE_TYPES } from '../config/drones.js';
+import { ITEMS_BY_SIZE, shelfOf } from '../config/products.js';
+import { BELT_SPEED, depotLayout } from '../world/depotLayout.js';
 import { ZONES } from '../config/zones.js';
 import { distance, clamp, pad } from '../core/util.js';
 import { choice, randomInt, randomFloat, weightedChoice } from '../core/random.js';
@@ -33,10 +36,67 @@ export function cargoSlotsUsed(game) {
 
 /** Segundos que un pedido listo espera antes de que empleados y drones puedan quedárselo. */
 export const AUTOMATION_DELAY = 5;
+/** Máximo de pedidos "solo para el jugador" (frágiles, demasiado grandes...) antes de dejar de generarlos. */
+const MAX_PLAYER_ONLY_ORDERS = 2;
 
 export function isAvailableForAutomation(game, order) {
   return order.status === 'pending' && !order.assignedTo && order.prep <= 0
-    && game.state.time - (order.readySince ?? 0) >= AUTOMATION_DELAY;
+    && game.state.time - (order.readySince ?? 0) >= AUTOMATION_DELAY
+    && !(order.autoSkipUntil > game.state.time);
+}
+
+/** ¿Un dron de este tipo puede volar hasta el edificio? */
+export function droneCanReach(city, droneType, building) {
+  const depot = city.depot;
+  return Boolean(building?.droneOk)
+    && distance(depot.centerX, depot.centerY, building.centerX, building.centerY) <= droneType.range;
+}
+
+/** Qué pueden llevar ahora mismo los repartidores y drones de la empresa. */
+export function automationProfile(game) {
+  const { state, derived } = game;
+  let courierCapacity = 0;
+  for (const worker of state.workers) {
+    if (worker.typeId !== 'courier') continue;
+    const vehicle = state.vehicles.find((v) => v.id === worker.vehicleId);
+    if (vehicle) courierCapacity = Math.max(courierCapacity, getVehicleStats(state, vehicle.typeId, derived).capacity);
+  }
+  const drones = state.drones.map((d) => DRONE_TYPES[d.typeId]).filter(Boolean);
+  const maxSlots = Math.max(courierCapacity, ...drones.map((t) => t.capacity), 0);
+  return { courierCapacity, drones, maxSlots, any: courierCapacity > 0 || drones.length > 0 };
+}
+
+/** ¿Algún repartidor o dron podría llevar este pedido? (los frágiles solo los entrega el jugador) */
+export function canAutomate(game, profile, order) {
+  if (order.kind === 'fragile') return false;
+  if (order.slots <= profile.courierCapacity) return true;
+  const building = game.city.getBuilding(order.buildingId);
+  return profile.drones.some((t) => order.slots <= t.capacity && droneCanReach(game.city, t, building));
+}
+
+function countPlayerOnlyOrders(game, profile) {
+  return game.state.orders.filter((o) => o.status === 'pending' && !o.assignedTo && !canAutomate(game, profile, o)).length;
+}
+
+/**
+ * Explica por qué un repartidor o dron está parado en el almacén.
+ * "canTake(order)" indica si esa unidad concreta podría llevar el pedido.
+ */
+export function automationIdleReason(game, canTake) {
+  let preparing = 0;
+  let waiting = 0;
+  let unfit = 0;
+  for (const order of game.state.orders) {
+    if (order.status !== 'pending' || order.assignedTo) continue;
+    if (order.prep > 0) { preparing++; continue; }
+    if (!canTake(order)) { unfit++; continue; }
+    if (!isAvailableForAutomation(game, order)) waiting++;
+  }
+  if (waiting) return 'Pedido listo: espera unos segundos por si lo cargas tú';
+  if (preparing && game.derived.prepLanes === 0) return 'Nadie prepara los pedidos: empaquétalos tú o contrata un preparador';
+  if (preparing) return 'Esperando a que se preparen los pedidos';
+  if (unfit) return 'Los pedidos listos no le sirven (tamaño, destino o frágiles)';
+  return 'Esperando pedidos nuevos';
 }
 
 export const compareOrders = (a, b) => PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority] || a.number - b.number;
@@ -52,33 +112,64 @@ function bestVehicleSpeed(game) {
   return best;
 }
 
-function availableKinds(game) {
+/** Tipos de pedido que se pueden generar. "limits" restringe para que los pueda llevar la automatización. */
+function availableKinds(game, limits = null) {
   const { state, derived } = game;
   const free = derived.storageCapacity - storageUsed(state);
-  const capacity = maxVehicleCapacity(state, derived);
+  const capacity = Math.min(maxVehicleCapacity(state, derived), limits?.maxSlots ?? Infinity);
   const result = [];
   for (const kindId of KIND_ORDER) {
     const kind = ORDER_KINDS[kindId];
     if (state.level < kind.minLevel) continue;
     if (kind.requiresUpgrade && !(state.upgrades[kind.requiresUpgrade] > 0)) continue;
+    if (limits && kindId === 'fragile') continue;
     const sizes = kind.sizes.filter((s) => PACKAGES[s].slots <= free && PACKAGES[s].slots <= capacity);
     if (sizes.length) result.push({ kind, sizes });
   }
   return result;
 }
 
-function candidateBuildings(game, kind) {
+function pickKindAndSize(game, limits = null) {
+  const available = availableKinds(game, limits);
+  if (!available.length) return null;
+  const level = game.state.level;
+  const pick = weightedChoice(rng, available, ({ kind: k }) => {
+    let weight = k.spawnWeight;
+    if (k.id === 'small') weight *= clamp(1.2 - 0.08 * level, 0.3, 1);
+    return weight;
+  });
+  return { kind: pick.kind, size: choice(rng, pick.sizes) };
+}
+
+/**
+ * Si ya hay bastantes pedidos que solo puede hacer el jugador, el siguiente se genera para que lo pueda
+ * llevar algún repartidor o dron (tamaño y, si solo cabe en un dron, destino a su alcance).
+ */
+function pickAutomatableOrder(game) {
+  const profile = automationProfile(game);
+  if (!profile.any || countPlayerOnlyOrders(game, profile) < MAX_PLAYER_ONLY_ORDERS) return null;
+  const pick = pickKindAndSize(game, { maxSlots: profile.maxSlots });
+  if (!pick) return null;
+  const slots = PACKAGES[pick.size].slots;
+  const filter = slots <= profile.courierCapacity
+    ? null
+    : (b) => profile.drones.some((t) => slots <= t.capacity && droneCanReach(game.city, t, b));
+  const building = pickBuilding(game, pick.kind, filter);
+  return building ? { ...pick, building } : null;
+}
+
+function candidateBuildings(game, kind, filter) {
   const { city, state } = game;
   const busy = new Set(state.orders.map((o) => o.buildingId));
   // El punto de entrega debe estar en una calle ya abierta (algunas calles pertenecen a la zona vecina)
   return city.buildings
     .filter((b) => state.zones[b.zoneId] && !city.circleHitsSolid(b.dropX, b.dropY, 10)
-      && (!kind.buildingKinds || kind.buildingKinds.includes(b.kind)))
+      && (!kind.buildingKinds || kind.buildingKinds.includes(b.kind)) && (!filter || filter(b)))
     .map((b) => ({ b, busy: busy.has(b.id) }));
 }
 
-function pickBuilding(game, kind) {
-  const candidates = candidateBuildings(game, kind);
+function pickBuilding(game, kind, filter = null) {
+  const candidates = candidateBuildings(game, kind, filter);
   if (!candidates.length) return null;
   const pick = weightedChoice(rng, candidates, ({ b, busy }) => ZONES[b.zoneId].orderWeight * (busy ? 0.15 : 1));
   return pick?.b ?? null;
@@ -92,22 +183,19 @@ export function createOrder(game, options = {}) {
   const { state, city, derived } = game;
   let kind;
   let size;
+  let building = options.building ?? null;
   if (options.kind) {
     kind = ORDER_KINDS[options.kind];
     size = options.size ?? kind.sizes[0];
   } else {
-    const available = availableKinds(game);
-    if (!available.length) return null;
-    const pick = weightedChoice(rng, available, ({ kind: k }) => {
-      let weight = k.spawnWeight;
-      if (k.id === 'small') weight *= clamp(1.2 - 0.08 * state.level, 0.3, 1);
-      return weight;
-    });
+    const pick = pickAutomatableOrder(game) ?? pickKindAndSize(game);
+    if (!pick) return null;
     kind = pick.kind;
-    size = choice(rng, pick.sizes);
+    size = pick.size;
+    building = building ?? pick.building ?? null;
   }
 
-  const building = options.building ?? pickBuilding(game, kind);
+  building = building ?? pickBuilding(game, kind);
   if (!building) return null;
   const depot = city.depot;
   const route = game.paths.route({ x: depot.dropX, y: depot.dropY }, { x: building.dropX, y: building.dropY });
@@ -116,9 +204,13 @@ export function createOrder(game, options = {}) {
   const pkg = PACKAGES[size];
   const distanceTiles = route.length / TILE;
   const prepTotal = options.instantReady ? 0 : pkg.prep;
+  const items = buildItems(kind, size, options, prepTotal === 0);
   let timeLeft = null;
   if (kind.priority === 'urgent') {
-    timeLeft = Math.round(prepTotal / derived.prepRate + 40 + 2 * (route.length / (bestVehicleSpeed(game) * 0.7)));
+    // Margen para que los productos recorran la cinta, empaquetarlos, registrarlos en expedición y cargarlos
+    const beltTime = depotLayout(city.depot).belt.length / BELT_SPEED;
+    const handling = prepTotal > 0 ? beltTime + 25 + 8 * items.length : 0;
+    timeLeft = Math.round(handling + 40 + 2 * (route.length / (bestVehicleSpeed(game) * 0.7)));
   }
 
   const order = {
@@ -128,7 +220,11 @@ export function createOrder(game, options = {}) {
     size,
     slots: pkg.slots,
     weight: randomInt(rng, pkg.weight[0], pkg.weight[1]),
-    contents: options.contents ?? choice(rng, kind.contents),
+    contents: summarizeItems(items),
+    // Productos que llegan por la cinta y se empaquetan (at: queued | belt | bin | hand | worker | table | box)
+    items,
+    handling: null, // 'picking' mientras el jugador los reúne; 'staff' si lo prepara un empleado
+    dispatched: prepTotal === 0, // la caja está registrada en expedición y se puede cargar
     buildingId: building.id,
     zoneId: building.zoneId,
     distanceTiles,
@@ -151,7 +247,32 @@ export function createOrder(game, options = {}) {
   return order;
 }
 
-/** Primer pedido del tutorial: una casa cercana del barrio inicial, ya preparada. */
+/**
+ * Lista de productos del pedido. El primero es options.contents (o uno al azar del tipo);
+ * los pedidos medianos y grandes pueden traer más, siempre distintos. options.items fuerza la lista.
+ */
+function buildItems(kind, size, options, packed) {
+  let names;
+  if (Array.isArray(options.items) && options.items.length) {
+    names = options.items.map(String);
+  } else {
+    const first = options.contents ?? choice(rng, kind.contents);
+    const [min, max] = ITEMS_BY_SIZE[size] ?? [1, 1];
+    const pool = kind.contents.filter((name) => name !== first);
+    names = [first];
+    const extra = options.contents ? 0 : randomInt(rng, min, max) - 1;
+    for (let i = 0; i < extra && pool.length; i++) names.push(pool.splice(Math.floor(rng() * pool.length), 1)[0]);
+  }
+  return names.map((name) => ({ name, shelf: shelfOf(name), at: packed ? 'box' : 'queued' }));
+}
+
+/** Texto corto del contenido para avisos y tarjetas: "Cafetera" o "Cafetera + 1 más". */
+export function summarizeItems(items) {
+  if (!items.length) return 'Paquete';
+  return items.length === 1 ? items[0].name : `${items[0].name} + ${items.length - 1} más`;
+}
+
+/** Primer pedido del tutorial: una casa cercana del barrio inicial, con un producto que preparar a mano. */
 export function createFirstOrder(game) {
   const { city } = game;
   const depot = city.depot;
@@ -164,7 +285,7 @@ export function createFirstOrder(game) {
     const score = Math.abs(route.length / TILE - 15);
     if (score < bestScore) { bestScore = score; best = b; }
   }
-  return createOrder(game, { kind: 'small', size: 'small', building: best, instantReady: true, contents: 'Libro de bienvenida' });
+  return createOrder(game, { kind: 'small', size: 'small', building: best, contents: 'Libro de bienvenida' });
 }
 
 export function updateOrders(game, dt) {
@@ -189,16 +310,9 @@ export function updateOrders(game, dt) {
     }
   }
 
-  // Preparación en el almacén (una línea por preparador + la del jefe)
-  const preparing = state.orders.filter((o) => o.status === 'pending' && o.prep > 0).sort(compareOrders);
-  for (let i = 0; i < Math.min(derived.prepLanes, preparing.length); i++) {
-    const order = preparing[i];
-    order.prep = Math.max(0, order.prep - dt * derived.prepRate);
-    if (order.prep === 0) {
-      order.readySince = state.time;
-      game.events.emit('orderReady', { order });
-    }
-  }
+  // La preparación ya no es un contador: los productos llegan por la cinta (systems/conveyor.js) y los
+  // empaquetan el jugador o los preparadores, que trabajan físicamente en el almacén (systems/warehouseStaff.js).
+  void derived;
 
   // Plazos de entrega
   for (const order of state.orders) {
@@ -271,7 +385,10 @@ export function rejectOrder(game, orderId) {
   const { state } = game;
   const order = getOrder(state, orderId);
   if (!order) return { ok: false, reason: 'Pedido inexistente' };
-  if (order.assignedTo) return { ok: false, reason: 'No se puede rechazar un pedido en reparto' };
+  // Un pedido que el jugador está reuniendo a mano (sin caja todavía) también se puede descartar
+  const picking = order.assignedTo === 'player' && order.handling === 'picking';
+  if (order.assignedTo && !picking) return { ok: false, reason: 'No se puede rechazar un pedido en reparto' };
+  if (state.player.hands) state.player.hands.items = state.player.hands.items.filter((ref) => ref.orderId !== order.id);
   state.orders = state.orders.filter((o) => o.id !== order.id);
   state.stats.ordersRejected += 1;
   if (order.priority === 'urgent') adjustReputation(game, -1);
@@ -304,6 +421,11 @@ export function completeDelivery(game, order, by) {
   state.orders.splice(index, 1);
   order.status = 'delivered';
   state.player.cargo = state.player.cargo.filter((id) => id !== order.id);
+  const hands = state.player.hands;
+  if (hands) {
+    if (hands.box === order.id) hands.box = '';
+    hands.items = hands.items.filter((ref) => ref.orderId !== order.id);
+  }
 
   const isPlayer = by.type === 'player';
   let streakCount = 0;

@@ -4,7 +4,9 @@
 import { TILE } from '../config/constants.js';
 import { ZONES } from '../config/zones.js';
 import { createRng } from '../core/random.js';
-import { roundRect, shade } from './sprites.js';
+import { drawBrandMark, roundRect, shade } from './sprites.js';
+import { DEFAULT_COMPANY, brandTitle, contrastText } from '../systems/branding.js';
+import { hasGarden, houseLayout, villaLayout } from '../world/lotLayout.js';
 
 export const STATIC_SCALE = 1.5;
 const MAX_CANVAS = 4096;
@@ -20,7 +22,11 @@ const HOUSE_ROOFS = ['#c8644f', '#5d6b82', '#8a5a44', '#5f8f6a', '#d9a441', '#7a
 const APARTMENT_ROOFS = ['#e3d5c6', '#d6dce8', '#e8d3d9', '#d8e4d2'];
 const AWNINGS = ['#e5484d', '#2a9d8f', '#f4a261', '#4c6ef5', '#c05299'];
 
-export function renderStaticMap(city) {
+// Imagen de la empresa con la que se pinta el almacén en el mapa estático actual
+let mapCompany = DEFAULT_COMPANY;
+
+export function renderStaticMap(city, company = DEFAULT_COMPANY) {
+  mapCompany = company ?? DEFAULT_COMPANY;
   const scale = staticScale(city);
   const canvas = document.createElement('canvas');
   canvas.width = Math.ceil(city.widthPx * scale);
@@ -282,12 +288,88 @@ function drawDepotLot(ctx, depot) {
 
 // ---------------------------------------------------------------- Edificios ----
 
+/** Huella del cuerpo del edificio. Casas y villas se retiran al fondo de la parcela (ver world/lotLayout.js). */
+function buildingFootprint(b) {
+  if (b.kind === 'house') {
+    const L = houseLayout(b);
+    return { x: b.centerX + L.bx - L.bw / 2, y: b.centerY + L.bz - L.bd / 2, w: L.bw, h: L.bd };
+  }
+  if (b.kind === 'villa') {
+    const L = villaLayout(b);
+    return { x: b.centerX - L.bw / 2, y: b.centerY + L.bz - L.bd / 2, w: L.bw, h: L.bd };
+  }
+  return { x: b.x + 3, y: b.y + 3, w: b.pw - 6, h: b.ph - 6 };
+}
+
+/** Jardín delantero en 2D: césped, camino, seto, arbustos, porche, garaje y piscina (sin colisión salvo porche y piscina). */
+function drawGardenLot(ctx, b) {
+  const cx = b.centerX;
+  const cy = b.centerY;
+  ctx.fillStyle = '#9fd08a';
+  ctx.fillRect(b.x + 1, b.y + 1, b.pw - 2, b.ph - 2);
+
+  const L = b.kind === 'house' ? houseLayout(b) : villaLayout(b);
+  const { fw, fd, side, front } = L;
+  const doorX = b.kind === 'house' ? L.bx : L.doorX;
+  const edge = side * (fd / 2 + 3); // borde de la parcela del lado de la calle
+  const span = (z0, z1) => [cy + Math.min(z0, z1), Math.abs(z1 - z0)];
+
+  // Camino desde la puerta hasta la acera
+  ctx.fillStyle = '#e7dec9';
+  {
+    const [y, h] = span(front, edge);
+    ctx.fillRect(cx + doorX - 5.5, y, 11, h);
+  }
+
+  if (b.kind === 'house') {
+    // Escalón del porche y garaje con su entrada
+    ctx.fillStyle = '#cfc6b6';
+    const [py, ph] = span(front, front + side * L.porch.depth);
+    ctx.fillRect(cx + L.porch.x - L.porch.w / 2, py, L.porch.w, ph);
+    if (L.garage) {
+      const [dy, dh] = span(L.garageZ + side * L.garageDepth / 2, edge);
+      ctx.fillStyle = '#c4beb2';
+      ctx.fillRect(cx + L.gx - 11, dy, 22, dh);
+      const gy = cy + L.garageZ - L.garageDepth / 2;
+      ctx.fillStyle = 'rgba(10,15,30,0.22)';
+      ctx.fillRect(cx + L.gx - L.garageWidth / 2 + 4, gy + 4, L.garageWidth, L.garageDepth);
+      ctx.fillStyle = '#7d828c';
+      roundRect(ctx, cx + L.gx - L.garageWidth / 2, gy - 5, L.garageWidth, L.garageDepth, 3);
+      ctx.fill();
+    }
+  } else {
+    // Piscina
+    const { pool } = L;
+    ctx.fillStyle = '#e8e2d6';
+    ctx.fillRect(cx + pool.x - pool.w / 2, cy + pool.z - pool.d / 2, pool.w, pool.d);
+    ctx.fillStyle = '#5fb4dc';
+    ctx.fillRect(cx + pool.x - pool.waterW / 2, cy + pool.z - pool.waterD / 2, pool.waterW, pool.waterD);
+  }
+
+  // Seto bajo junto a la acera, con hueco para el camino (y la entrada del garaje)
+  const hedgeY = cy + side * (fd / 2 - 3) - 2.5;
+  const gapL = doorX - 8;
+  const gapR = b.kind === 'house' && L.garage ? L.gx + 14 : doorX + 8;
+  ctx.fillStyle = '#4f8f45';
+  if (gapL > -fw / 2 + 4) ctx.fillRect(cx - fw / 2, hedgeY, gapL + fw / 2, 5);
+  if (gapR < fw / 2 - 4) ctx.fillRect(cx + gapR, hedgeY, fw / 2 - gapR, 5);
+  if (b.kind === 'house' && L.garage && L.gx - 13 - (doorX + 8) > 4) ctx.fillRect(cx + doorX + 8, hedgeY, L.gx - 13 - (doorX + 8), 5);
+
+  // Arbustos delante de la fachada
+  ctx.fillStyle = '#5aa84f';
+  const bushes = b.kind === 'house' ? [[L.bx - L.bw * 0.32, 4], [L.bx + L.bw * 0.3, 5]] : [[fw * 0.42, 3]];
+  for (const [ox, oz] of bushes) {
+    ctx.beginPath();
+    ctx.arc(cx + ox, cy + front + side * (oz + 3), 4.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
 function drawBuilding(ctx, b) {
   const lift = BUILDING_LIFT[b.kind] ?? 8;
-  const x = b.x + 3;
-  const y = b.y + 3;
-  const w = b.pw - 6;
-  const h = b.ph - 6;
+  const garden = hasGarden(b);
+  if (garden) drawGardenLot(ctx, b);
+  const { x, y, w, h } = buildingFootprint(b);
   const roof = { x, y: y - lift, w, h };
 
   // Sombra proyectada
@@ -300,7 +382,8 @@ function drawBuilding(ctx, b) {
   ctx.fillStyle = palette.wall;
   roundRect(ctx, x, y, w, h, 4);
   ctx.fill();
-  drawDoorAndPath(ctx, b, roof, lift, palette);
+  if (garden) drawGardenDoor(ctx, b, { x, y, w, h }, lift);
+  else drawDoorAndPath(ctx, b, roof, lift, palette);
   ctx.fillStyle = palette.roof;
   roundRect(ctx, roof.x, roof.y, roof.w, roof.h, 4);
   ctx.fill();
@@ -336,7 +419,7 @@ function paletteFor(b) {
     case 'tower': return { roof: '#9fb2c8', wall: '#5c6f86' };
     case 'factory': return { roof: '#8d939d', wall: '#585d66' };
     case 'warehouse': return { roof: '#c8cdd6', wall: '#7b8290' };
-    case 'depot': return { roof: '#ffb703', wall: '#b87d00' };
+    case 'depot': return { roof: mapCompany.primary, wall: shade(mapCompany.primary, -70) };
     default: return { roof: '#aaa', wall: '#777' };
   }
 }
@@ -353,6 +436,14 @@ function drawDoorAndPath(ctx, b, roof, lift, palette) {
     ctx.fillRect(b.doorX - 6, b.y - 9, 12, 9);
   }
   void roof; void palette;
+}
+
+/** Puerta en la fachada retirada de casas y villas (el camino ya lo pinta drawGardenLot). */
+function drawGardenDoor(ctx, b, body, lift) {
+  if (b.door !== 'bottom') return; // vista cenital: la fachada superior queda bajo el tejado
+  const doorX = b.centerX + (b.kind === 'house' ? houseLayout(b).bx : villaLayout(b).doorX);
+  ctx.fillStyle = '#4a3b2f';
+  ctx.fillRect(doorX - 7, body.y + body.h - lift + 1, 14, lift);
 }
 
 function drawHouseRoof(ctx, r, palette, solar) {
@@ -530,22 +621,26 @@ function drawDepotRoof(ctx, r) {
   }
   ctx.fillStyle = 'rgba(255,255,255,0.18)';
   ctx.fillRect(r.x, r.y, r.w, 10);
-  // Logo: caja con cinta
+  // Logotipo y nombre de la empresa
   const bx = r.x + 18;
   const by = r.y + r.h / 2 - 17;
-  ctx.fillStyle = '#b9824a';
-  roundRect(ctx, bx, by, 34, 34, 4); ctx.fill();
-  ctx.fillStyle = '#e8c48e';
-  ctx.fillRect(bx + 14, by, 6, 34);
-  ctx.strokeStyle = '#7d5430'; ctx.lineWidth = 2;
-  roundRect(ctx, bx, by, 34, 34, 4); ctx.stroke();
-  ctx.fillStyle = '#4a2f10';
-  ctx.font = '800 17px "Segoe UI","Trebuchet MS",sans-serif';
+  drawBrandMark(ctx, bx, by, 34, mapCompany);
+  const ink = contrastText(mapCompany.primary);
+  const title = brandTitle(mapCompany);
+  const maxW = r.w - (bx - r.x) - 56;
+  let size = 17;
+  ctx.font = `800 ${size}px "Segoe UI","Trebuchet MS",sans-serif`;
+  while (size > 9 && ctx.measureText(title).width > maxW) {
+    size -= 1;
+    ctx.font = `800 ${size}px "Segoe UI","Trebuchet MS",sans-serif`;
+  }
+  ctx.fillStyle = ink;
   ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
-  ctx.fillText('PARCEL EMPIRE', bx + 46, by + 12);
+  ctx.fillText(title, bx + 46, by + 12);
   ctx.font = '700 11px "Segoe UI",sans-serif';
-  ctx.fillStyle = 'rgba(74,47,16,0.8)';
-  ctx.fillText('ALMACÉN CENTRAL · REPARTO', bx + 46, by + 31);
+  ctx.globalAlpha = 0.8;
+  ctx.fillText(mapCompany.slogan ? mapCompany.slogan.toLocaleUpperCase('es-ES') : 'ALMACÉN CENTRAL · REPARTO', bx + 46, by + 31, maxW);
+  ctx.globalAlpha = 1;
 }
 
 // ------------------------------------------------------ Zonas bloqueadas ----

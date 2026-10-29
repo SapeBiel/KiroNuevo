@@ -5,6 +5,7 @@ import { ORDER_KINDS } from '../config/packages.js';
 import { TUTORIAL_STEPS } from '../config/tutorial.js';
 import { createCity, randomCitySeed } from '../world/cityMap.js';
 import { createPathService } from '../world/pathfinding.js';
+import { isInsideOffice } from '../world/depotLayout.js';
 import { EventBus } from './eventBus.js';
 import { createInitialState } from './state.js';
 import { loadState, saveState, clearSave, peekSavedCitySeed } from './storage.js';
@@ -12,9 +13,13 @@ import { distance } from './util.js';
 import { computeStats, getPlayerVehicle, getVehicleStats } from '../systems/stats.js';
 import { updatePlayerVehicle } from '../systems/playerVehicle.js';
 import {
-  updateOrders, createFirstOrder, getOrder, loadBest, loadOrder, unloadOrder, rejectOrder,
-  deliverNearby, getDeliverableOrders, canLoadOrder, cargoSlotsUsed, playerCapacity, compareOrders,
+  updateOrders, createFirstOrder, getOrder, loadOrder, unloadOrder, rejectOrder,
+  getDeliverableOrders, canLoadOrder,
 } from '../systems/orders.js';
+import { MAX_EXIT_SPEED, exitVehicle, enterVehicle, updateOnFoot } from '../systems/onFoot.js';
+import { doFootAction, getFootAction, getFootGuide, rackBoxes } from '../systems/handling.js';
+import { updateConveyor } from '../systems/conveyor.js';
+import { updatePickers } from '../systems/warehouseStaff.js';
 import { buyUpgrade } from '../systems/upgrades.js';
 import { buyVehicle, driveVehicle } from '../systems/fleet.js';
 import { hireWorker, fireWorker, cycleWorkerVehicle, renameWorker, updateWorkers } from '../systems/workers.js';
@@ -34,10 +39,14 @@ export class Game {
     this.persist = persist;
     this.resetting = false;
     this.paused = false;
-    this.controls = { throttle: 0, steer: 0, drift: false };
+    // Conducción (throttle, steer, drift) y a pie (walkX/walkY en el mapa, giros del ratón, correr)
+    this.controls = {
+      throttle: 0, steer: 0, drift: false,
+      walkX: 0, walkY: 0, faceMove: false, sprint: false, lookYaw: 0, lookPitch: 0, jump: false,
+    };
     this.crashCooldown = 0;
     this.trackedOrderId = null;
-    this.runtime = { clock: 0, incomeEvents: [], fuelDebt: 0, workers: {}, drones: {} };
+    this.runtime = { clock: 0, incomeEvents: [], fuelDebt: 0, workers: {}, drones: {}, pickers: {} };
     this.autosaveTimer = 0;
     this.achievementTimer = 0;
     this.derived = computeStats(this.state);
@@ -82,6 +91,12 @@ export class Game {
     return distance(p.x, p.y, depot.zoneCenter.x, depot.zoneCenter.y) <= DEPOT_RADIUS;
   }
 
+  /** A pie dentro de la oficina del almacén: el único sitio desde el que se compran mejoras. */
+  isPlayerInOffice() {
+    const p = this.state.player;
+    return p.mode === 'foot' && isInsideOffice(this.city.depot, p.foot.x, p.foot.y);
+  }
+
   getDeliverableOrders() {
     return getDeliverableOrders(this);
   }
@@ -90,29 +105,39 @@ export class Game {
     return getVehicleStats(this.state, getPlayerVehicle(this.state).typeId, this.derived);
   }
 
+  get onFoot() {
+    return this.state.player.mode === 'foot';
+  }
+
+  /** Lo que sigue la cámara: la persona a pie o el vehículo ({ x, y, angle, speed }). */
+  getFocus() {
+    const p = this.state.player;
+    if (p.mode === 'foot') return { x: p.foot.x, y: p.foot.y, angle: p.foot.yaw, speed: 0 };
+    return p;
+  }
+
   /** Acción disponible con la tecla E en este momento (para el botón contextual). */
   getContextAction() {
-    const deliverable = getDeliverableOrders(this);
-    if (deliverable.length) {
-      return { kind: 'deliver', count: deliverable.length, label: `Entregar ${deliverable.length > 1 ? `${deliverable.length} pedidos` : 'pedido'}` };
+    const p = this.state.player;
+    if (p.mode === 'foot') {
+      const found = getFootAction(this);
+      return found ? { kind: found.kind, label: found.label, ok: found.ok } : null;
     }
-    if (this.isPlayerInDepot()) {
-      let used = cargoSlotsUsed(this);
-      const capacity = playerCapacity(this);
-      let count = 0;
-      const ready = this.state.orders.filter((o) => o.status === 'pending' && !o.assignedTo && o.prep <= 0).sort(compareOrders);
-      for (const order of ready) {
-        if (used + order.slots <= capacity) { used += order.slots; count += 1; }
-      }
-      if (count) return { kind: 'load', count, label: `Cargar ${count > 1 ? `${count} paquetes` : 'paquete'}` };
-    }
-    return null;
+    if (Math.abs(p.speed) > MAX_EXIT_SPEED) return null;
+    const near = getDeliverableOrders(this).length > 0;
+    return { kind: 'exit', ok: true, label: near ? 'Bajar y llevar el paquete a la puerta' : 'Bajar del vehículo' };
+  }
+
+  /** Siguiente paso cuando se va a pie (texto y destino), o null. */
+  getFootGuide() {
+    return this.onFoot ? getFootGuide(this) : null;
   }
 
   /** Destino al que apunta la flecha de navegación. */
   getNavigationTarget() {
     const { state, city } = this;
     const p = state.player;
+    if (p.mode === 'foot') return getFootGuide(this)?.target ?? null;
     const asTarget = (order, kind) => {
       const b = city.getBuilding(order.buildingId);
       return { x: b.dropX, y: b.dropY, kind, order, color: ORDER_KINDS[order.kind].color, label: b.address };
@@ -129,7 +154,8 @@ export class Game {
       return asTarget(cargo[0], 'destination');
     }
     if (tracked) return asTarget(tracked, 'pending');
-    const waiting = state.orders.some((o) => o.status === 'pending' && !o.assignedTo && o.prep <= 0);
+    // Hay trabajo en el almacén: cajas en expedición o pedidos que preparar
+    const waiting = rackBoxes(state).length > 0 || state.orders.some((o) => o.status === 'pending' && o.prep > 0);
     if (waiting && !this.isPlayerInDepot()) {
       const { depot } = city;
       return { x: depot.zoneCenter.x, y: depot.zoneCenter.y, kind: 'depot', order: null, color: '#ffb703', label: 'Almacén' };
@@ -139,7 +165,7 @@ export class Game {
 
   /** Destino de la flecha junto al vehículo: requiere la mejora y nunca manda de vuelta al almacén. */
   getArrowTarget() {
-    if (!(this.state.upgrades.guideArrow > 0)) return null;
+    if (!(this.state.upgrades.guideArrow > 0) || this.onFoot) return null;
     const target = this.getNavigationTarget();
     return target && target.kind !== 'depot' ? target : null;
   }
@@ -153,8 +179,14 @@ export class Game {
     state.time += dt;
     this.recomputeStats();
 
-    updatePlayerVehicle(this, dt);
+    if (state.player.mode === 'foot') updateOnFoot(this, dt);
+    else {
+      this.controls.jump = false; // al volante no se salta (y no queda un salto pendiente al bajarse)
+      updatePlayerVehicle(this, dt);
+    }
     updateOrders(this, dt);
+    updateConveyor(this, dt);
+    updatePickers(this, dt);
     updateWorkers(this, dt);
     updateDrones(this, dt);
     this.updateTutorial();
@@ -194,18 +226,18 @@ export class Game {
     return result;
   }
 
+  /**
+   * Tecla E. Al volante: bajarse. A pie: lo que haya delante (coger un producto, empaquetar, cargar o sacar
+   * una caja del vehículo, subir a él o entregar en la puerta). Todo exige estar físicamente en el sitio.
+   */
   interact() {
     if (this.paused || this.state.pendingSummary) return { ok: false };
-    const delivered = deliverNearby(this);
-    if (delivered.length) return { ok: true, kind: 'deliver', delivered };
-    if (this.isPlayerInDepot()) {
-      const count = loadBest(this);
-      if (count) return { ok: true, kind: 'load', count };
-      const hasReady = this.state.orders.some((o) => o.status === 'pending' && !o.assignedTo && o.prep <= 0);
-      return this.act({ ok: false, reason: hasReady ? 'No hay espacio en tu vehículo' : 'No hay pedidos preparados todavía' });
-    }
-    return this.act({ ok: false, reason: 'Aquí no hay nada que cargar ni entregar' });
+    if (this.state.player.mode !== 'foot') return this.act(exitVehicle(this));
+    return this.act(doFootAction(this));
   }
+
+  exitVehicle() { return this.act(exitVehicle(this)); }
+  enterVehicle(id) { return this.act(enterVehicle(this, id)); }
 
   loadOrder(id) { return this.act(loadOrder(this, id)); }
   unloadOrder(id) { return this.act(unloadOrder(this, id)); }

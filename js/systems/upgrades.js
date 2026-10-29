@@ -5,6 +5,8 @@ import { MAX_LEVEL } from '../config/constants.js';
 import { formatMoney } from '../core/util.js';
 import { spend } from './economy.js';
 
+export const OFFICE_ONLY_REASON = 'Solo desde la oficina';
+
 export function upgradeCost(def, currentLevel) {
   if (def.costs) return def.costs[currentLevel];
   if (def.cost !== undefined) return def.cost;
@@ -29,7 +31,14 @@ export function getUpgradeStatus(game, def) {
     }
   }
   if (state.money < cost) return { level, state: 'poor', cost, reason: `Te faltan ${formatMoney(cost - state.money)}` };
+  // Se podría comprar, pero solo en persona desde la oficina (officeOnly sirve para seguir avisando con los puntos)
+  if (!game.isPlayerInOffice()) return { level, state: 'locked', cost, reason: OFFICE_ONLY_REASON, officeOnly: true };
   return { level, state: 'available', cost, reason: '' };
+}
+
+/** Mejora comprable ya o en cuanto se entre en la oficina (para los avisos del panel). */
+export function isUpgradeReady(status) {
+  return status.state === 'available' || status.officeOnly === true;
 }
 
 export function buyUpgrade(game, id) {

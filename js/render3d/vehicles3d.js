@@ -4,7 +4,8 @@
 // Ejes locales: el vehículo mira hacia +x (ángulo 0 del juego), y es la altura y +z es su lado derecho.
 
 import * as THREE from '../vendor/three.module.js';
-import { roundRect } from '../render/sprites.js';
+import { drawBrandMark, roundRect } from '../render/sprites.js';
+import { DEFAULT_COMPANY, brandTitle, companyKey, companyWebsite, contrastText } from '../systems/branding.js';
 import { getBeamTexture, makeCanvas, toTexture } from './textures3d.js';
 
 // ------------------------------------------------- Reflejos del entorno ----
@@ -133,10 +134,57 @@ const STYLES = {
   },
 };
 
+// Imagen de la empresa (nombre, eslogan, logotipo y colores). Las texturas se guardan en caché por
+// modelo y por imagen (style.id = "modelo@clave"), así que al cambiarla se generan rótulos nuevos.
+let brand = DEFAULT_COMPANY;
+let brandKey = companyKey(DEFAULT_COMPANY);
+
+/**
+ * Cambia la imagen de la empresa. Devuelve true si ha cambiado algo; en ese caso hay que volver a
+ * crear los modelos (las texturas de la imagen anterior se liberan aquí).
+ */
+export function setVehicleBranding(company) {
+  const next = company ?? DEFAULT_COMPANY;
+  const key = companyKey(next);
+  if (key === brandKey) return false;
+  const old = `@${brandKey}`;
+  for (const [cacheKey, material] of decalMaterials) {
+    if (!cacheKey.includes(old)) continue;
+    releaseMaterial(material);
+    decalMaterials.delete(cacheKey);
+  }
+  for (const [cacheKey, texture] of textureCache) {
+    if (!cacheKey.includes(old)) continue;
+    texture.dispose();
+    textureCache.delete(cacheKey);
+  }
+  brand = next;
+  brandKey = key;
+  return true;
+}
+
 function styleFor(type) {
   const base = STYLES[type.id]
     ?? (type.shape === 'truck' ? STYLES.truck : type.shape === 'electric' ? STYLES.van_electric : { ...STYLES.van_basic, paint: type.color });
-  return { id: type.id, ...base };
+  const style = { ...base, id: `${type.id}@${brandKey}`, brandName: brandTitle(brand), company: brand };
+  if (brand.slogan) style.tagline = brand.slogan;
+  if (style.web) style.web = `${companyWebsite(brand)} · 900 123 456`;
+  if (brand.fleetColors) {
+    // Toda la flota con los colores corporativos; el texto se elige para que se lea sobre la pintura
+    style.paint = brand.primary;
+    if (style.body === 'truck') {
+      // La caja sigue blanca: las franjas usan el color principal y el de detalle
+      style.accent = brand.primary;
+      style.accent2 = brand.accent;
+      style.text = contrastText(style.boxPaint);
+    } else {
+      style.accent = brand.secondary;
+      style.accent2 = brand.accent;
+      style.text = contrastText(brand.primary);
+    }
+  }
+  style.badgeText = contrastText(style.paint);
+  return style;
 }
 
 // ------------------------------------------------------------ Texturas ----
@@ -153,19 +201,9 @@ function fitFont(ctx, text, weight, size, maxWidth) {
   return s;
 }
 
-/** Logotipo: caja de cartón con cinta. */
+/** Logotipo de la empresa (la caja de cartón de serie o el icono elegido). */
 function brandMark(ctx, x, y, s) {
-  ctx.save();
-  ctx.fillStyle = '#b9824a';
-  roundRect(ctx, x, y, s, s, s * 0.14);
-  ctx.fill();
-  ctx.fillStyle = '#e8c48e';
-  ctx.fillRect(x + s * 0.4, y, s * 0.2, s);
-  ctx.lineWidth = Math.max(2, s * 0.06);
-  ctx.strokeStyle = '#6b4423';
-  roundRect(ctx, x, y, s, s, s * 0.14);
-  ctx.stroke();
-  ctx.restore();
+  drawBrandMark(ctx, x, y, s, brand);
 }
 
 function drawPlate(ctx, x, y, w, h, text) {
@@ -221,8 +259,8 @@ function liveryTexture(style, w, h) {
     ctx.fillStyle = style.text;
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
-    fitFont(ctx, 'PARCEL EMPIRE', 900, mark * 0.62, maxW);
-    ctx.fillText('PARCEL EMPIRE', tx, my + mark * 0.36);
+    fitFont(ctx, style.brandName, 900, mark * 0.62, maxW);
+    ctx.fillText(style.brandName, tx, my + mark * 0.36);
     fitFont(ctx, style.tagline, 700, mark * 0.3, maxW);
     ctx.globalAlpha = 0.9;
     ctx.fillText(style.tagline, tx, my + mark * 0.86);
@@ -255,8 +293,8 @@ function rearTexture(style, truck) {
       ctx.fillStyle = style.text;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      fitFont(ctx, 'PARCEL EMPIRE', 900, 22, s - 40);
-      ctx.fillText('PARCEL EMPIRE', s / 2, 16);
+      fitFont(ctx, style.brandName, 900, 22, s - 40);
+      ctx.fillText(style.brandName, s / 2, 16);
       drawPlate(ctx, s / 2 - 46, s - 22, 92, 20, style.plate);
     } else {
       ctx.fillStyle = '#121b25';
@@ -280,8 +318,8 @@ function rearTexture(style, truck) {
       ctx.fillStyle = style.text;
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
-      fitFont(ctx, 'PARCEL EMPIRE', 900, 22, 150);
-      ctx.fillText('PARCEL EMPIRE', 74, 168);
+      fitFont(ctx, style.brandName, 900, 22, 150);
+      ctx.fillText(style.brandName, 74, 168);
       drawPlate(ctx, s / 2 - 50, 204, 100, 26, style.plate);
     }
     return toTexture(canvas);
@@ -576,7 +614,7 @@ export function createVehicleModel(type) {
     box(2, 1.2, 5, spec.wsTopX - 3, spec.roofY + BEVEL, 0, SHARED.amber);
     for (const side of [-1, 1]) cylinder(0.5, 4, spec.wsTopX - 7, spec.roofY + BEVEL + 0.6, side * 2.5, SHARED.chrome, 'x');
     // Emblema en las puertas de la cabina
-    const badge = decalMaterial(`badge|${style.id}`, liveryTexture({ ...style, accent: 'rgba(0,0,0,0)', accent2: 'rgba(0,0,0,0)', text: '#ffffff', tagline: '', web: '' }, 7, 3));
+    const badge = decalMaterial(`badge|${style.id}`, liveryTexture({ ...style, id: `badge-${style.id}`, accent: 'rgba(0,0,0,0)', accent2: 'rgba(0,0,0,0)', text: style.badgeText, tagline: '', web: '' }, 7, 3));
     decal(7, 3, badge, spec.cabRear + 6.5, 14.5, W / 2 + 0.07);
     decal(7, 3, badge, spec.cabRear + 6.5, 14.5, -W / 2 - 0.07, Math.PI);
   } else {

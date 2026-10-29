@@ -2,7 +2,8 @@
 
 import * as THREE from '../vendor/three.module.js';
 import { createRng } from '../core/random.js';
-import { drawOutlinedText, drawPin } from '../render/sprites.js';
+import { drawBrandMark, drawOutlinedText, drawPin } from '../render/sprites.js';
+import { DEFAULT_COMPANY, brandTitle, contrastText } from '../systems/branding.js';
 
 let maxAnisotropy = 1;
 
@@ -408,9 +409,14 @@ function drawDepotCell(ctx, w, h, o) {
 // ------------------------------------------------------- Letreros y suelos ----
 
 /** Letrero rectangular con texto (nombres de tienda, rótulo del almacén…). */
-export function makeSignTexture(text, { bg = '#1c2536', fg = '#ffffff', width = 256, height = 48, size = 24 } = {}) {
-  const canvas = makeCanvas(width, height);
-  const ctx = canvas.getContext('2d');
+export function makeSignTexture(text, options = {}) {
+  const canvas = makeCanvas(options.width ?? 256, options.height ?? 48);
+  drawSign(canvas.getContext('2d'), text, options);
+  return toTexture(canvas);
+}
+
+function drawSign(ctx, text, { bg = '#1c2536', fg = '#ffffff', width = 256, height = 48, size = 24 } = {}) {
+  ctx.clearRect(0, 0, width, height);
   ctx.fillStyle = bg;
   ctx.fillRect(0, 0, width, height);
   ctx.strokeStyle = 'rgba(255,255,255,0.35)';
@@ -426,37 +432,82 @@ export function makeSignTexture(text, { bg = '#1c2536', fg = '#ffffff', width = 
     ctx.font = `800 ${fontSize}px "Segoe UI","Trebuchet MS",system-ui,sans-serif`;
   }
   ctx.fillText(text, width / 2, height / 2 + 1);
-  return toTexture(canvas);
+}
+
+// ----------------------------------------------- Imagen de la empresa ----
+// El tejado y el rótulo del almacén llevan el nombre, el logotipo y el color de la empresa.
+// Se guardan las texturas del almacén actual para repintarlas en el sitio cuando el jugador cambia la marca.
+
+let brandCompany = DEFAULT_COMPANY;
+let depotRoof = null;
+let depotSign = null;
+
+function fitText(ctx, text, weight, size, maxWidth) {
+  let s = size;
+  ctx.font = `${weight} ${s}px "Segoe UI","Trebuchet MS",system-ui,sans-serif`;
+  while (s > 9 && ctx.measureText(text).width > maxWidth) {
+    s -= 1;
+    ctx.font = `${weight} ${s}px "Segoe UI","Trebuchet MS",system-ui,sans-serif`;
+  }
+}
+
+function drawDepotRoof(ctx, w, h, company) {
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = company.primary;
+  ctx.fillRect(0, 0, w, h);
+  ctx.fillStyle = 'rgba(0,0,0,0.1)';
+  for (let i = -h; i < w; i += 48) {
+    ctx.beginPath();
+    ctx.moveTo(i, h); ctx.lineTo(i + 24, h); ctx.lineTo(i + 24 + h, 0); ctx.lineTo(i + h, 0);
+    ctx.closePath();
+    ctx.fill();
+  }
+  drawBrandMark(ctx, 34, 56, 80, company);
+  ctx.fillStyle = contrastText(company.primary);
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  fitText(ctx, brandTitle(company), 800, 44, w - 134 - 20);
+  ctx.fillText(brandTitle(company), 134, 80);
+  ctx.globalAlpha = 0.85;
+  const subtitle = company.slogan ? company.slogan.toLocaleUpperCase('es-ES') : 'ALMACÉN CENTRAL · REPARTO';
+  fitText(ctx, subtitle, 700, 22, w - 134 - 20);
+  ctx.fillText(subtitle, 134, 124);
+  ctx.globalAlpha = 1;
 }
 
 /** Logo del tejado del almacén (visto desde arriba). */
 export function makeDepotRoofTexture() {
   const canvas = makeCanvas(512, 192);
-  const ctx = canvas.getContext('2d');
-  ctx.fillStyle = '#ffb703';
-  ctx.fillRect(0, 0, 512, 192);
-  ctx.fillStyle = 'rgba(0,0,0,0.1)';
-  for (let i = -192; i < 512; i += 48) {
-    ctx.beginPath();
-    ctx.moveTo(i, 192); ctx.lineTo(i + 24, 192); ctx.lineTo(i + 24 + 192, 0); ctx.lineTo(i + 192, 0);
-    ctx.closePath();
-    ctx.fill();
+  drawDepotRoof(canvas.getContext('2d'), 512, 192, brandCompany);
+  depotRoof = toTexture(canvas);
+  return depotRoof;
+}
+
+/** Rótulo de la fachada del almacén con el nombre de la empresa. */
+export function makeDepotSignTexture() {
+  const canvas = makeCanvas(256, 48);
+  drawSign(canvas.getContext('2d'), brandTitle(brandCompany), {
+    bg: brandCompany.primary, fg: contrastText(brandCompany.primary), width: 256, height: 48, size: 24,
+  });
+  depotSign = toTexture(canvas);
+  return depotSign;
+}
+
+/** Cambia la imagen de la empresa y repinta el almacén ya construido. */
+export function setDepotBranding(company) {
+  brandCompany = company ?? DEFAULT_COMPANY;
+  if (depotRoof) {
+    const canvas = depotRoof.image;
+    drawDepotRoof(canvas.getContext('2d'), canvas.width, canvas.height, brandCompany);
+    depotRoof.needsUpdate = true;
   }
-  ctx.fillStyle = '#b9824a';
-  ctx.fillRect(34, 56, 80, 80);
-  ctx.fillStyle = '#e8c48e';
-  ctx.fillRect(66, 56, 16, 80);
-  ctx.strokeStyle = '#7d5430';
-  ctx.lineWidth = 4;
-  ctx.strokeRect(34, 56, 80, 80);
-  ctx.fillStyle = '#4a2f10';
-  ctx.textBaseline = 'middle';
-  ctx.font = '800 44px "Segoe UI","Trebuchet MS",sans-serif';
-  ctx.fillText('PARCEL EMPIRE', 134, 80);
-  ctx.font = '700 22px "Segoe UI",sans-serif';
-  ctx.fillStyle = 'rgba(74,47,16,0.85)';
-  ctx.fillText('ALMACÉN CENTRAL · REPARTO', 134, 124);
-  return toTexture(canvas);
+  if (depotSign) {
+    const canvas = depotSign.image;
+    drawSign(canvas.getContext('2d'), brandTitle(brandCompany), {
+      bg: brandCompany.primary, fg: contrastText(brandCompany.primary), width: canvas.width, height: canvas.height, size: 24,
+    });
+    depotSign.needsUpdate = true;
+  }
 }
 
 /** Helipuerto de las torres. */

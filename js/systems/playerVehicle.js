@@ -1,4 +1,4 @@
-// Física arcade del vehículo controlado por el jugador, con colisiones contra edificios y límites.
+// Física arcade del vehículo controlado por el jugador, con colisiones contra edificios, árboles y límites.
 // Derrape: con controls.drift (Espacio) a buena velocidad, la carrocería (p.angle) gira más deprisa que
 // la dirección real de avance (drift.moveAngle) y el vehículo se desliza. Un derrape largo da un turbo al soltar.
 
@@ -43,8 +43,11 @@ export function rearWheelPositions(p, type) {
 
 const SUBSTEP = 6; // px máximos por subpaso (evita atravesar paredes a mucha velocidad)
 
-/** Empuje necesario para sacar un círculo de las casillas sólidas que toca (o null). */
-function circlePush(city, cx, cy, r) {
+/**
+ * Empuje necesario para sacar un círculo de las casillas sólidas que toca (o null).
+ * Con walker = true es una persona: ignora los obstáculos solo para vehículos (la puerta del almacén).
+ */
+export function circlePush(city, cx, cy, r, walker = false) {
   let px = 0;
   let py = 0;
   const minTx = Math.floor((cx - r) / TILE);
@@ -80,6 +83,48 @@ function circlePush(city, cx, cy, r) {
       }
     }
   }
+  // Casas y villas con jardín: rectángulos a medida (el jardín delantero y el seto no chocan)
+  city.forEachRectNear?.(cx + px, cy + py, r, (rect) => {
+    if (walker && rect.vehicleOnly) return;
+    const x = cx + px;
+    const y = cy + py;
+    const nearestX = clamp(x, rect.x0, rect.x1);
+    const nearestY = clamp(y, rect.y0, rect.y1);
+    const dx = x - nearestX;
+    const dy = y - nearestY;
+    const d2 = dx * dx + dy * dy;
+    if (d2 >= r * r) return;
+    if (d2 > 1e-9) {
+      const d = Math.sqrt(d2);
+      px += (dx / d) * (r - d);
+      py += (dy / d) * (r - d);
+    } else {
+      // Centro dentro del rectángulo: sale por el lado más cercano
+      const exits = [
+        [x - rect.x0, -1, 0], [rect.x1 - x, 1, 0], [y - rect.y0, 0, -1], [rect.y1 - y, 0, 1],
+      ].sort((a, b) => a[0] - b[0]);
+      const [depth, nx, ny] = exits[0];
+      px += nx * (depth + r);
+      py += ny * (depth + r);
+    }
+  });
+  // Árboles de los parques: obstáculos circulares (el resto del parque es transitable)
+  city.forEachTreeNear?.(cx + px, cy + py, r, (tree) => {
+    const x = cx + px;
+    const y = cy + py;
+    const dx = x - tree.x;
+    const dy = y - tree.y;
+    const min = r + tree.r;
+    const d2 = dx * dx + dy * dy;
+    if (d2 >= min * min) return;
+    const d = Math.sqrt(d2);
+    if (d > 1e-6) {
+      px += (dx / d) * (min - d);
+      py += (dy / d) * (min - d);
+    } else {
+      px += min; // centro exactamente sobre el tronco: sale hacia un lado
+    }
+  });
   return px || py ? { x: px, y: py } : null;
 }
 
@@ -268,6 +313,16 @@ export function updatePlayerVehicle(game, dt) {
   drift.lastAngle = p.angle;
   game.crashCooldown = Math.max(0, (game.crashCooldown ?? 0) - dt);
   refreshTransitStatus(game);
+}
+
+/** Detiene el vehículo del jugador en el sitio (al bajarse): sin velocidad, sin derrape ni turbo. */
+export function stopVehicle(game) {
+  const drift = getDrift(game);
+  endDrift(game, drift, { allowBoost: false });
+  drift.boost = 0;
+  drift.moveAngle = game.state.player.angle;
+  game.state.player.speed = 0;
+  game.runtime.wallContact = false;
 }
 
 function registerImpact(game, impact) {

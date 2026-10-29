@@ -42,6 +42,9 @@ export function createInitialState(city) {
       bestStreak: 0,
       ordersCreated: 0,
       ordersRejected: 0,
+      itemsPicked: 0,
+      boxesPacked: 0,
+      boxesDispatched: 0,
     },
     streak: { count: 0, timer: 0 },
     upgrades: {},
@@ -55,13 +58,20 @@ export function createInitialState(city) {
     nextOrderNumber: 1,
     spawnTimer: 14,
     player: {
+      // Posición del vehículo (aparcado en el patio del almacén con la trasera hacia la fachada)
       vehicleId: 'v1',
-      x: depot.startX,
-      y: depot.startY,
-      angle: 0,
+      x: depot.park.x,
+      y: depot.park.y,
+      angle: depot.park.angle,
       speed: 0,
       cargo: [],
       distanceDriven: 0,
+      // 'foot' = a pie (primera persona); 'drive' = al volante
+      mode: 'foot',
+      // z/vz: altura y velocidad vertical del salto (0 = con los pies en el suelo)
+      foot: { x: depot.walkStart.x, y: depot.walkStart.y, yaw: depot.walkStart.yaw, pitch: 0, walked: 0, z: 0, vz: 0, jumps: 0 },
+      // Lo que lleva en las manos: una caja (id del pedido, '' si ninguna) o hasta 3 productos sueltos
+      hands: { box: '', items: [] },
     },
     missions: [],
     dayStats: createDayStats(),

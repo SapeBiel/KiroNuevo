@@ -15,10 +15,14 @@ export function computeStats(state) {
   const hq = lvl('hq');
   const costMult = Math.pow(0.93, lvl('costControl'));
   const managerBoost = 1 + 0.08 * managers;
-  const spawnInterval = Math.max(
+  // Cada repartidor o dron trae su propio flujo de pedidos: si no, compiten por los mismos huecos
+  // que el jugador y se quedan parados en el almacén.
+  const automationUnits = countWorkers(state, 'courier') + state.drones.length;
+  const baseSpawnInterval = Math.max(
     3.5,
     15 * Math.pow(0.93, state.level - 1) * (1 - 0.06 * lvl('marketing')) * (1 - state.reputation / 400),
   );
+  const spawnInterval = Math.max(1.5, baseSpawnInterval / (1 + 0.3 * automationUnits));
   const droneUnlocked = lvl('droneProgram') > 0;
 
   return {
@@ -27,11 +31,14 @@ export function computeStats(state) {
     reputationRewardMult: 1 + state.reputation / 250,
     reputationGainMult: 1 + 0.25 * lvl('service'),
     storageCapacity: 6 + 3 * lvl('storage'),
-    maxActiveOrders: 2 + lvl('orderSlots') + hq,
+    automationUnits,
+    maxActiveOrders: 2 + lvl('orderSlots') + hq + automationUnits,
     maxVehicles: 1 + lvl('garage'),
     maxStaff: STAFF_BY_HQ_LEVEL[hq],
-    prepLanes: 1 + pickers,
+    // Sin preparadores, los pedidos los recoge y empaqueta el jugador a mano en el almacén
+    prepLanes: pickers,
     prepRate: (1 + 0.2 * lvl('prep')) * (1 + 0.15 * pickers),
+    walkSpeedMult: 1 + 0.06 * lvl('prep'),
     spawnInterval,
     staffEfficiency: (1 + 0.06 * lvl('organization')) * (1 + 0.05 * lvl('routes')) * managerBoost,
     maxStops: 1 + lvl('autoDispatch'),

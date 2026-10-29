@@ -8,6 +8,7 @@ import { computeDailyCosts } from '../../systems/economy.js';
 import { hireStatus } from '../../systems/workers.js';
 import { getWorkerRuntime } from '../../systems/workers.js';
 import { getDroneRuntime } from '../../systems/drones.js';
+import { getPickerRuntime, stationFor } from '../../systems/warehouseStaff.js';
 import { attr, buyButton, chip, emptyState } from './shared.js';
 
 export const teamUiState = { firing: null, firingUntil: 0 };
@@ -85,7 +86,9 @@ function renderWorkerCard(game, worker) {
   const stars = '★'.repeat(Math.round((worker.skill - 0.7) / 0.1)).padEnd(5, '☆').slice(0, 5);
   const confirming = teamUiState.firing === worker.id && performance.now() < teamUiState.firingUntil;
   const busy = rt && rt.phase !== 'idle';
-  const status = rt ? rt.status : worker.typeId === 'picker' ? 'Preparando pedidos en el almacén' : 'Optimizando rutas de la empresa';
+  const status = rt ? rt.status
+    : worker.typeId === 'picker' ? `Puesto ${stationFor(game, worker).index + 1} · ${getPickerRuntime(game, worker).status}`
+      : 'Optimizando rutas de la empresa';
 
   return `
     <article class="card worker">

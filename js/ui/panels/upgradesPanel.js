@@ -4,7 +4,7 @@ import { UPGRADES, UPGRADE_CATEGORIES } from '../../config/upgrades.js';
 import { VEHICLES, VEHICLE_ORDER, getVehicleType } from '../../config/vehicles.js';
 import { DRONE_TYPES, DRONE_ORDER } from '../../config/drones.js';
 import { formatMoney } from '../../core/util.js';
-import { getUpgradeStatus } from '../../systems/upgrades.js';
+import { getUpgradeStatus, isUpgradeReady } from '../../systems/upgrades.js';
 import { vehiclePurchaseStatus } from '../../systems/fleet.js';
 import { droneStatus, droneCost } from '../../systems/drones.js';
 import { getVehicleStats } from '../../systems/stats.js';
@@ -16,9 +16,11 @@ export const upgradesUiState = { category: 'vehicles' };
 export function renderUpgradesPanel(game) {
   const { state } = game;
   const category = upgradesUiState.category;
-  const available = (id) => Object.values(UPGRADES).some((u) => u.category === id && getUpgradeStatus(game, u).state === 'available');
+  const available = (id) => Object.values(UPGRADES).some((u) => u.category === id && isUpgradeReady(getUpgradeStatus(game, u)));
+  const inOffice = game.isPlayerInOffice();
 
   let html = `<div class="panel-head"><h3>🔧 Mejoras</h3><div class="chips">${chip(`Saldo ${formatMoney(state.money)}`)}</div></div>
+    ${inOffice ? '' : '<p class="muted" role="note">🏢 Las mejoras solo se compran desde la oficina del almacén (esquina del fondo a la izquierda). Ve andando hasta allí; el ordenador de la mesa (E) abre este panel.</p>'}
     <div class="subtabs" role="tablist" aria-label="Categorías de mejoras">
       ${UPGRADE_CATEGORIES.map((c) => `<button role="tab" class="subtab ${c.id === category ? 'is-active' : ''}" aria-selected="${c.id === category}" data-action="subtab" data-id="${c.id}">
         ${c.icon} ${c.name}${available(c.id) ? '<i class="dot" aria-label="Hay mejoras disponibles"></i>' : ''}</button>`).join('')}
@@ -60,9 +62,11 @@ function renderFleet(game) {
     const stats = getVehicleStats(state, vehicle.typeId, derived);
     const isPlayer = vehicle.id === state.player.vehicleId;
     const worker = state.workers.find((w) => w.id === vehicle.driver);
-    const driver = isPlayer ? 'Lo conduces tú' : worker ? `Asignado a ${worker.name}` : 'Libre en el garaje';
+    const driver = isPlayer ? 'Lo conduces tú' : worker ? `Asignado a ${worker.name}` : 'Libre en el patio del almacén';
     const canDrive = !isPlayer && !worker;
-    const reason = !canDrive ? '' : !inDepot ? 'Ve al almacén para cambiar de vehículo' : state.player.cargo.length ? 'Descarga primero los paquetes' : '';
+    // Se cambia de vehículo en persona: andando hasta su puerta del conductor y pulsando E
+    const reason = 'Ve andando hasta él (patio del almacén) y pulsa E junto a la puerta del conductor';
+    void inDepot;
     html += `
       <article class="card vehicle ${isPlayer ? 'is-current' : ''}">
         <div class="card-icon" aria-hidden="true">${type.icon}</div>
@@ -71,7 +75,7 @@ function renderFleet(game) {
           <p class="effect">${driver}</p>
           <ul class="facts compact"><li>🏁 ${toKmh(stats.maxSpeed)} km/h</li><li>🧳 ${stats.capacity} huecos</li></ul>
         </div>
-        ${canDrive ? `<button class="btn ${reason ? 'is-disabled' : 'btn-primary'}" data-action="drive" data-id="${vehicle.id}" aria-disabled="${Boolean(reason)}" data-reason="${attr(reason)}" ${reason ? `data-tip="${attr(reason)}"` : ''}>Conducir</button>` : isPlayer ? '<span class="tag">En uso</span>' : ''}
+        ${canDrive ? `<span class="tag" data-tip="${attr(reason)}">🅿️ En el patio</span>` : isPlayer ? '<span class="tag">En uso</span>' : ''}
       </article>`;
   }
   html += '</div><h4 class="section-title">Comprar vehículos</h4><div class="cards">';

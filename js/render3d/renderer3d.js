@@ -15,16 +15,24 @@ import { renderGroundMap } from '../render/mapLayer.js';
 import { drawOutlinedText, roundRect } from '../render/sprites.js';
 import { buildCity, buildOutskirts, segmentHitsBuilding, updateEntryFade } from './buildings3d.js';
 import { buildBarriers, buildFountains, buildLamps, buildTrees } from './props3d.js';
-import { createDroneModel, createVehicleModel, setVehicleEnvironment } from './vehicles3d.js';
+import { createDroneModel, createVehicleModel, setVehicleBranding, setVehicleEnvironment } from './vehicles3d.js';
+import { getCompany } from '../systems/branding.js';
 import { cargoSlotsUsed, playerCapacity } from '../systems/orders.js';
 import { getDrift, rearWheelPositions } from '../systems/playerVehicle.js';
 import { Effects3D } from './effects3d.js';
 import {
   OVERLAY_LAYER, PIN_ANCHOR_Y, PIN_ASPECT, createLabel, disposeSprite, getCloudTexture, getPinMaterial, getZoneTexture, makeCanvas,
-  scaleSpriteToScreen, setLabelText, setMaxAnisotropy, toTexture,
+  scaleSpriteToScreen, setDepotBranding, setLabelText, setMaxAnisotropy, toTexture,
 } from './textures3d.js';
 import { PostFX } from './postfx.js';
 import { setBuildingEnvironment } from './buildings3d.js';
+import { buildDepotInterior } from './depotInterior3d.js';
+import { boxSizeFor, productInfo } from '../config/products.js';
+import { createBoxModel, createProductModel } from './products3d.js';
+import { EYE_HEIGHT, parkedVehicles } from '../systems/onFoot.js';
+import { DOOR_RADIUS, heldBox, heldItems } from '../systems/handling.js';
+import { deliveryDoorPoint } from '../world/lotLayout.js';
+import { nearestLockedZone, signOpacity, signPosition } from '../world/zoneBorder.js';
 
 /**
  * Niveles de calidad: alta = post-procesado con brillo, sombras finas y resolución completa;
@@ -137,7 +145,12 @@ export class Renderer3D {
     this.steerSmooth = 0;
     this.cockpitTimer = 0;
     this.envLevel = -1;
+    // A pie la cámara va en los ojos del repartidor (primera persona), sea cual sea la cámara del vehículo
+    this.footView = game.state.player.mode === 'foot';
+    this.bobPhase = 0;
 
+    // La imagen de la empresa tiene que estar lista antes de crear el almacén y los vehículos
+    this.applyBranding(getCompany(game.state));
     this.createLights();
     this.createSky();
     this.createClouds();
@@ -159,6 +172,7 @@ export class Renderer3D {
     this.world = null;
 
     this.createNavigationArrow();
+    this.createViewModel();
     this.buildWorld();
     this.bindEvents();
     this.bindCanvas();
@@ -421,7 +435,8 @@ export class Renderer3D {
       this.outskirts = buildOutskirts(city);
       this.scene.add(this.outskirts.group);
     }
-    this.world.add(this.cityHandle.group, this.trees.group, this.lamps.group, this.barriers.group, this.fountains.group);
+    this.depotInterior = buildDepotInterior(city.depot);
+    this.world.add(this.cityHandle.group, this.trees.group, this.lamps.group, this.barriers.group, this.fountains.group, this.depotInterior.group);
     this.worldParts = { ground, outer };
 
     this.cityVersion = city.version;
@@ -437,6 +452,7 @@ export class Renderer3D {
     this.lamps?.dispose();
     this.barriers?.dispose();
     this.fountains?.dispose();
+    this.depotInterior?.dispose();
     this.groundTexture?.dispose();
     this.worldParts.ground.geometry.dispose();
     this.worldParts.ground.material.dispose();
@@ -466,13 +482,15 @@ export class Renderer3D {
       ctx.stroke();
       drawOutlinedText(ctx, `🔒 ${zone.name}`, 180, 33, { size: 24, color: '#ffffff' });
       drawOutlinedText(ctx, `Nivel ${zone.unlockLevel} · ${formatInt(zone.unlockCost)} €`, 180, 66, { size: 19, color: '#ffd166' });
-      drawOutlinedText(ctx, state.level >= zone.unlockLevel ? 'Desbloquéala en el panel Empresa' : 'Sigue creciendo para abrirla', 180, 97, { size: 13, color: '#b9c3da', weight: '600' });
+      drawOutlinedText(ctx, state.level >= zone.unlockLevel ? 'Desbloquéala en el ordenador (Empresa)' : 'Sigue creciendo para abrirla', 180, 97, { size: 13, color: '#b9c3da', weight: '600' });
       const material = new THREE.SpriteMaterial({ map: toTexture(canvas), transparent: true, depthTest: false, depthWrite: false, fog: false });
       const sprite = new THREE.Sprite(material);
       sprite.renderOrder = 18;
       sprite.layers.set(OVERLAY_LAYER);
       sprite.position.set(bounds.centerX, 120, bounds.centerY);
       sprite.userData.aspect = 360 / 124;
+      sprite.userData.zoneId = id;
+      sprite.visible = false; // solo se enseña al acercarse mucho a su borde (updateZoneLabels)
       this.scene.add(sprite);
       this.zoneLabels.push(sprite);
     }
@@ -492,14 +510,18 @@ export class Renderer3D {
     this.unsubscribe = [
       events.on('orderDelivered', ({ building, reward, xp, by }) => {
         const manual = by.type === 'player';
-        fx.addConfetti(building.dropX, building.dropY, manual ? 40 : 14, manual ? 1 : 0.6);
-        fx.addRing(building.dropX, building.dropY, '#7CFC9A', manual ? 150 : 90);
-        fx.addText(building.dropX, building.dropY, `+${formatInt(reward)} €`, { size: manual ? 26 : 18, y: 46 });
-        if (manual && xp) fx.addText(building.dropX, building.dropY, `+${xp} XP`, { color: '#8ad7ff', size: 15, life: 1.3, rise: 30, y: 26 });
+        // A pie se entrega en la puerta; empleados y drones, en la calle
+        const at = by.at ?? { x: building.dropX, y: building.dropY };
+        fx.addConfetti(at.x, at.y, manual ? 40 : 14, manual ? 1 : 0.6);
+        fx.addRing(at.x, at.y, '#7CFC9A', manual ? 60 : 90);
+        fx.addText(at.x, at.y, `+${formatInt(reward)} €`, { size: manual ? 26 : 18, y: manual ? 22 : 46 });
+        if (manual && xp) fx.addText(at.x, at.y, `+${xp} XP`, { color: '#8ad7ff', size: 15, life: 1.3, rise: 30, y: 14 });
       }),
-      events.on('orderLoaded', () => {
+      events.on('orderLoaded', ({ from }) => {
+        // La caja vuela desde las manos del repartidor hasta el vehículo
         const depot = city.depot;
-        fx.addBox(depot.doorX + (Math.random() - 0.5) * 30, depot.doorY - 6, () => ({ x: state.player.x, z: state.player.y }), Math.random() * 0.12);
+        const start = from ?? { x: depot.doorX + (Math.random() - 0.5) * 30, y: depot.doorY - 6 };
+        fx.addBox(start.x, start.y, () => ({ x: state.player.x, z: state.player.y }), 0);
       }),
       events.on('crash', ({ impact, x, y }) => {
         fx.addSparks(x, y, Math.min(16, 4 + impact / 12));
@@ -511,6 +533,8 @@ export class Renderer3D {
         fx.addShake(Math.min(3, 0.8 + speed / 120));
       }),
       events.on('zoneUnlocked', () => fx.addRing(state.player.x, state.player.y, '#ffd166', 260)),
+      // Nueva imagen de empresa: se repinta el almacén y se vuelven a crear los vehículos con la rotulación nueva
+      events.on('companyChanged', ({ company }) => this.applyBranding(company, true)),
       events.on('levelUp', () => {
         fx.addConfetti(state.player.x, state.player.y, 60, 1.3);
         fx.addRing(state.player.x, state.player.y, '#ffd166', 200);
@@ -527,7 +551,7 @@ export class Renderer3D {
   bindCanvas() {
     this.onWheel = (event) => {
       event.preventDefault();
-      if (this.cameraMode === 'driver') return;
+      if (this.cameraMode === 'driver' || this.footView) return;
       this.zoomFactor = clamp(this.zoomFactor * (event.deltaY > 0 ? 1.08 : 0.92), 0.6, 1.9);
     };
     this.onLost = (event) => {
@@ -572,10 +596,99 @@ export class Renderer3D {
 
   /** En la cabina hace falta más ángulo de visión y un plano cercano más próximo (el volante está a pocos cm). */
   applyProjection() {
-    const driver = this.cameraMode === 'driver';
-    this.camera.fov = driver ? 70 : 52;
-    this.camera.near = driver ? 0.5 : 2;
+    this.camera.fov = this.baseFov();
+    this.camera.near = this.footView ? 0.3 : this.cameraMode === 'driver' ? 0.5 : 2;
     this.camera.updateProjectionMatrix();
+  }
+
+  baseFov() {
+    if (this.footView) return 72;
+    return this.cameraMode === 'driver' ? 70 : 52;
+  }
+
+  /** Primera persona a pie: ojos del repartidor con un leve balanceo al andar, mirando según el ratón. */
+  updateFootCamera(dt) {
+    const f = this.game.state.player.foot;
+    const moving = clamp((f.moving ?? 0) / 60, 0, 1);
+    this.bobPhase += dt * 10 * moving;
+    const airborne = (f.z ?? 0) > 0.05;
+    const bob = airborne ? 0 : Math.sin(this.bobPhase) * 0.35 * moving;
+    // Al aterrizar de un salto la cámara baja un poco y se recupera (el impacto lo deja onFoot en f.landed)
+    if (f.landed > 0) {
+      this.landDip = Math.min(2.2, f.landed / 40);
+      f.landed = 0;
+    }
+    this.landDip = (this.landDip ?? 0) * Math.exp(-9 * dt);
+    const eye = EYE_HEIGHT + (f.z ?? 0) + bob - this.landDip;
+    const cp = Math.cos(f.pitch);
+    this.camPos.set(f.x, eye, f.y);
+    this.camLook.set(
+      f.x + Math.cos(f.yaw) * cp * 20,
+      eye + Math.sin(f.pitch) * 20,
+      f.y + Math.sin(f.yaw) * cp * 20,
+    );
+    this.applyCamera(this.effects.shake * 0.15);
+  }
+
+  /** Lo que se lleva en las manos, pegado a la cámara (solo a pie). */
+  createViewModel() {
+    // Los modelos se colocan a tamaño real y el grupo se encoge hacia la cámara: se ven igual de grandes,
+    // pero quedan a menos de 1 px de los ojos y nunca se meten dentro de una mesa o una pared (el
+    // repartidor mide 4,5 px de radio), sin perder la profundidad entre sus propias piezas.
+    const group = new THREE.Group();
+    group.scale.setScalar(0.12);
+    group.visible = false;
+    this.viewModel = { group, key: '', models: [] };
+    this.camera.add(group);
+    this.scene.add(this.camera); // la cámara debe estar en la escena para que se dibujen sus hijos
+  }
+
+  /** Muestra en las manos el producto real (libro, botella, bicicleta…) o la caja del tamaño del pedido. */
+  updateViewModel() {
+    const vm = this.viewModel;
+    vm.group.visible = this.footView;
+    if (!this.footView) return;
+    const box = heldBox(this.game);
+    const held = box ? [] : heldItems(this.game);
+    const key = box ? `box:${box.id}` : held.map(({ item }) => item.name).join('|');
+    if (key !== vm.key) {
+      vm.key = key;
+      for (const m of vm.models) {
+        vm.group.remove(m);
+        m.userData.dispose?.();
+      }
+      vm.models = [];
+      if (box) {
+        const [, h, s] = boxSizeFor(box);
+        const m = createBoxModel(box);
+        m.position.set(0, -2.6 - h * 0.6, -(5.6 + s / 2));
+        m.rotation.set(0.16, 0, 0);
+        vm.models.push(m);
+      } else {
+        const dims = held.map(({ item }) => {
+          const [w, h, d] = productInfo(item.name).size;
+          const turned = d > w; // el lado largo, de lado a lado
+          return { name: item.name, across: turned ? d : w, depth: turned ? w : d, h, yaw: turned ? Math.PI / 2 : 0 };
+        });
+        const total = dims.reduce((sum, d) => sum + d.across, 0) + Math.max(0, dims.length - 1) * 0.6;
+        let cursor = -total / 2 + (dims.length === 1 ? 1.4 : 0);
+        for (const d of dims) {
+          const m = createProductModel(d.name);
+          m.position.set(cursor + d.across / 2, -3.2 - d.h * 0.4, -(5.4 + d.depth / 2));
+          m.rotation.set(0.24, d.yaw, 0);
+          vm.models.push(m);
+          cursor += d.across + 0.6;
+        }
+      }
+      for (const m of vm.models) {
+        m.traverse((o) => { o.castShadow = false; o.receiveShadow = false; });
+        vm.group.add(m);
+      }
+    }
+    // Leve vaivén al andar
+    const f = this.game.state.player.foot;
+    const moving = clamp((f.moving ?? 0) / 60, 0, 1);
+    vm.group.position.set(Math.sin(this.bobPhase * 0.5) * 0.02 * moving, Math.abs(Math.cos(this.bobPhase * 0.5)) * 0.015 * moving, 0);
   }
 
   /** Coloca la cámara en los ojos del conductor, mirando un poco hacia la curva. */
@@ -624,6 +737,10 @@ export class Renderer3D {
 
   snapCamera() {
     this.camAngle = this.game.state.player.angle;
+    if (this.footView) {
+      this.updateFootCamera(0);
+      return;
+    }
     if (this.cameraMode === 'driver') {
       this.updateDriverCamera(0);
       return;
@@ -637,6 +754,10 @@ export class Renderer3D {
   updateCamera(dt) {
     const p = this.game.state.player;
     this.camAngle += normalizeAngle(p.angle - this.camAngle) * (1 - Math.exp(-3.4 * dt));
+    if (this.footView) {
+      this.updateFootCamera(dt);
+      return;
+    }
     if (this.cameraMode === 'driver') {
       this.updateDriverCamera(this.effects.shake);
       return;
@@ -687,6 +808,13 @@ export class Renderer3D {
     this.time += dt;
     const { state, city } = this.game;
     if (city.version !== this.cityVersion) this.buildWorld();
+    // Al bajar o subir del vehículo cambia la cámara (primera persona ↔ la elegida para conducir)
+    const foot = state.player.mode === 'foot';
+    if (foot !== this.footView) {
+      this.footView = foot;
+      this.applyProjection();
+      this.snapCamera();
+    }
 
     const hour = clockHour(state);
     const darkness = darknessAt(hour);
@@ -696,6 +824,8 @@ export class Renderer3D {
     this.syncVehicles(dt, darkness);
     this.syncDrones(dt, darkness);
     this.updateCamera(dt);
+    this.updateViewModel();
+    this.depotInterior.update(this.game, dt, this.camera, this.cssH);
     this.updateCockpit(dt);
     this.syncMarkers();
     this.syncPins();
@@ -728,7 +858,8 @@ export class Renderer3D {
     const angle = t * Math.PI;
     const direction = new THREE.Vector3(Math.cos(angle) * 0.85, Math.sin(angle) * 0.9 + 0.3, 0.45).normalize();
     direction.lerp(MOON_DIRECTION, darkness * darkness * (3 - 2 * darkness)).normalize();
-    const focus = this.tmpFocus.set(this.game.state.player.x, 0, this.game.state.player.y);
+    const subject = this.game.getFocus();
+    const focus = this.tmpFocus.set(subject.x, 0, subject.y);
     this.sun.position.copy(focus).addScaledVector(direction, 1000);
     this.sun.target.position.copy(focus);
     this.sun.target.updateMatrixWorld();
@@ -758,11 +889,6 @@ export class Renderer3D {
     }
   }
 
-  parkedSpot(index) {
-    const lot = this.game.city.depot.lot;
-    return { x: lot.x + 28 + (index % 4) * 46, y: lot.y + 17 + Math.floor(index / 4) * 30 };
-  }
-
   vehicleEntry(key, type, withLabel = false) {
     let entry = this.vehicles.get(key);
     if (entry && entry.typeId !== type.id) {
@@ -781,6 +907,14 @@ export class Renderer3D {
       this.vehicles.set(key, entry);
     }
     return entry;
+  }
+
+  /** Aplica el nombre, logotipo y colores de la empresa al almacén y a la flota. */
+  applyBranding(company, rebuild = false) {
+    setDepotBranding(company);
+    const changed = setVehicleBranding(company);
+    if (!rebuild || !changed) return;
+    for (const [key, entry] of [...this.vehicles]) this.removeVehicle(key, entry);
   }
 
   removeVehicle(key, entry) {
@@ -832,7 +966,7 @@ export class Renderer3D {
     playerEntry.model.setLights(lightsOn);
     this.steerSmooth += (clamp(controls.steer, -1, 1) - this.steerSmooth) * (1 - Math.exp(-8 * dt));
     playerEntry.model.setSteer(this.steerSmooth);
-    playerEntry.model.setInteriorView(this.cameraMode === 'driver');
+    playerEntry.model.setInteriorView(this.cameraMode === 'driver' && !this.footView);
     if (this.headlight.parent !== playerEntry.model.group) {
       playerEntry.model.group.add(this.headlight, this.headlight.target);
     }
@@ -840,16 +974,10 @@ export class Renderer3D {
     this.headlight.target.position.set(playerType.length / 2 + 140, 0, 0);
     this.headlight.intensity = darkness * 3.2;
 
-    // Aparcados en el almacén
-    let index = 0;
-    for (const vehicle of state.vehicles) {
-      if (vehicle.id === p.vehicleId) continue;
-      const rt = vehicle.driver ? runtime.workers[vehicle.driver] : null;
-      if (rt && rt.phase !== 'idle') continue;
-      const spot = this.parkedSpot(index++);
-      if (index > 8) break;
-      const entry = this.vehicleEntry(`parked:${vehicle.id}`, getVehicleType(vehicle.typeId));
-      this.placeVehicle(entry, spot.x, spot.y, 0);
+    // Aparcados en el patio del almacén (mismos sitios en los que se puede subir a ellos a pie)
+    for (const spot of parkedVehicles(this.game)) {
+      const entry = this.vehicleEntry(`parked:${spot.vehicle.id}`, getVehicleType(spot.vehicle.typeId));
+      this.placeVehicle(entry, spot.x, spot.y, spot.angle);
       entry.model.setBraking(false);
       entry.model.setLights(lightsOn);
     }
@@ -899,7 +1027,7 @@ export class Renderer3D {
 
   /** Velocímetro y navegador de la cabina (unas 10 veces por segundo, solo en la vista del conductor). */
   updateCockpit(dt) {
-    if (this.cameraMode !== 'driver') return;
+    if (this.cameraMode !== 'driver' || this.footView) return;
     this.cockpitTimer -= dt;
     if (this.cockpitTimer > 0) return;
     this.cockpitTimer = 0.1;
@@ -933,8 +1061,8 @@ export class Renderer3D {
     const { game } = this;
     const drift = getDrift(game);
     // Golpe de ángulo de visión durante el turbo (no en la cabina, que ya usa 70°)
-    const baseFov = this.cameraMode === 'driver' ? 70 : 52;
-    const targetFov = baseFov + (drift.boost > 0 ? 7 : 0);
+    const baseFov = this.baseFov();
+    const targetFov = baseFov + (drift.boost > 0 && !this.footView ? 7 : 0);
     if (Math.abs(this.camera.fov - targetFov) > 0.05) {
       this.camera.fov += (targetFov - this.camera.fov) * (1 - Math.exp(-6 * dt));
       this.camera.updateProjectionMatrix();
@@ -1047,8 +1175,29 @@ export class Renderer3D {
         marker.label.position.set(0, 24, DROP_RADIUS + 6);
         marker.group.add(marker.label);
       }
-      marker.label.visible = ready;
-      if (ready) scaleSpriteToScreen(marker.label, this.camera, this.cssH, marker.label.userData.label.pxHeight);
+      marker.label.visible = ready && !this.footView;
+      if (ready && !this.footView) scaleSpriteToScreen(marker.label, this.camera, this.cssH, marker.label.userData.label.pxHeight);
+    }
+
+    // A pie: puerta del destinatario (con la caja en las manos) y siguiente paso de la guía
+    if (this.footView) {
+      const box = heldBox(game);
+      if (box) {
+        const door = deliveryDoorPoint(city.getBuilding(box.buildingId));
+        const marker = this.marker(`door:${box.id}`, door.x, door.y, DOOR_RADIUS, ORDER_KINDS[box.kind].color);
+        this.styleMarker(marker, { solid: true, alpha: 1, pulse: 0.05, beam: true });
+        marker.beam.scale.set(3, 40, 3);
+      }
+      const target = game.getFootGuide()?.target;
+      if (target && target.kind !== 'door') {
+        const marker = this.marker('guide', target.x, target.y, 7, target.color);
+        if (marker.color !== target.color) {
+          marker.color = target.color;
+          marker.beam.material.color.set(target.color);
+        }
+        this.styleMarker(marker, { solid: false, alpha: 0.9, pulse: 0.08, beam: target.kind === 'vehicle' });
+        marker.beam.scale.set(2, 30, 2);
+      }
     }
 
     // Retira los marcadores de pedidos que ya no están cargados
@@ -1083,7 +1232,7 @@ export class Renderer3D {
       if (order.assignedTo && order.assignedTo !== 'player') continue;
       const b = city.getBuilding(order.buildingId);
       const kind = ORDER_KINDS[order.kind];
-      const loaded = order.assignedTo === 'player';
+      const loaded = state.player.cargo.includes(order.id) || state.player.hands.box === order.id;
       const focus = loaded || order.id === tracked;
       used.add(order.id);
 
@@ -1171,10 +1320,17 @@ export class Renderer3D {
       this.labelTimer = 0.5;
       if (this.zoneLabelKey() !== this.labelKey) this.buildZoneLabels();
     }
+    // El cartel de una zona bloqueada solo sale cuando el jugador está muy cerca de su borde
+    const focus = this.game.getFocus();
+    const near = nearestLockedZone(this.game.city, focus.x, focus.y);
     for (const sprite of this.zoneLabels) {
-      const far = this.camera.position.distanceTo(sprite.position) > 1500;
-      sprite.visible = !far;
-      if (!far) scaleSpriteToScreen(sprite, this.camera, this.cssH, 104, sprite.userData.aspect);
+      const show = Boolean(near) && near.zoneId === sprite.userData.zoneId;
+      sprite.visible = show;
+      if (!show) continue;
+      const at = signPosition(near, focus.x, focus.y);
+      sprite.position.set(at.x, this.footView ? 26 : 40, at.y);
+      sprite.material.opacity = signOpacity(near.dist);
+      scaleSpriteToScreen(sprite, this.camera, this.cssH, this.footView ? 84 : 96, sprite.userData.aspect);
     }
   }
 
@@ -1188,7 +1344,7 @@ export class Renderer3D {
     if (this.lampTimer <= 0 && lit) {
       this.lampTimer = 0.3;
       const lamps = this.game.city.lampPosts;
-      const p = this.game.state.player;
+      const p = this.game.getFocus();
       const taken = new Set();
       for (const light of this.lampLights) {
         let best = -1;
@@ -1213,7 +1369,7 @@ export class Renderer3D {
 
   /** Los edificios que quedan entre la cámara y el vehículo se vuelven casi transparentes. */
   updateFades(dt) {
-    if (this.cameraMode === 'driver') {
+    if (this.cameraMode === 'driver' || this.footView) {
       for (const entry of this.cityHandle.entries) updateEntryFade(entry, 1, dt);
       return;
     }

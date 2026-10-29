@@ -18,14 +18,15 @@
 <body>
   <div id="app">
     <header id="topbar">
-      <div class="brand">
+      <button type="button" class="brand" id="btn-brand" data-tip="Personalizar la empresa: nombre, logotipo y colores">
         <svg class="brand-logo" viewBox="0 0 48 48" aria-hidden="true">
           <rect width="48" height="48" rx="12" fill="#ffb703"/>
           <path d="M10 18l14-7 14 7v14l-14 7-14-7z" fill="#b9824a" stroke="#6b4423" stroke-width="2" stroke-linejoin="round"/>
           <path d="M10 18l14 7 14-7M24 25v14" stroke="#e8c48e" stroke-width="3" fill="none"/>
         </svg>
-        <div class="brand-text"><b>Parcel Empire</b><small>Delivery Tycoon</small></div>
-      </div>
+        <span class="brand-text"><b id="brand-name">Parcel Empire</b><small id="brand-tagline">Delivery Tycoon</small></span>
+        <span class="sr-only">: personalizar la empresa</span>
+      </button>
 
       <div class="stats" role="list">
         <div class="stat stat-money" role="listitem" data-tip="Dinero disponible. Ganas con las entregas y lo inviertes en mejoras.">
@@ -54,7 +55,6 @@
 
       <div class="actions">
         <button class="icon-btn" id="btn-camera" aria-label="Cambiar cámara" data-tip="Cambiar cámara (C): exterior, conductor o aérea" hidden>🎥</button>
-        <button class="icon-btn" id="btn-view" aria-label="Cambiar a vista 3D" data-tip="Cambiar a vista 3D (V)">3D</button>
         <button class="icon-btn" id="btn-sound" aria-label="Desactivar sonido" data-tip="Sonido (M)">🔊</button>
         <button class="icon-btn" id="btn-help" aria-label="Cómo se juega" data-tip="Cómo se juega">❓</button>
         <button class="btn" id="btn-menu" data-tip="Menú y pausa (P)">☰ Menú</button>
@@ -63,12 +63,15 @@
 
     <main id="stage">
       <canvas id="game-canvas" tabindex="0" role="img"
-        aria-label="Mapa de la ciudad. Conduce con WASD o las flechas, carga y entrega paquetes con la tecla E."></canvas>
+        aria-label="Mapa de la ciudad. Anda o conduce con WASD o las flechas; la tecla E coge, empaqueta, carga, entrega y sube o baja del vehículo."></canvas>
       <canvas id="game-canvas-3d" tabindex="0" role="img" hidden
-        aria-label="Vista 3D de la ciudad. Conduce con WASD o las flechas, carga y entrega paquetes con la tecla E."></canvas>
+        aria-label="Vista 3D en primera persona. Anda con WASD, mira con el ratón y salta con Espacio; la tecla E coge productos de la cinta, empaqueta, registra en expedición, carga, entrega y sube o baja del vehículo."></canvas>
 
       <div id="hud">
         <section id="cargo-card" aria-label="Carga del vehículo"></section>
+        <section id="hands-card" aria-label="Lo que llevas en las manos y siguiente paso" aria-live="polite"></section>
+        <div id="crosshair" aria-hidden="true"></div>
+        <div id="look-hint" aria-hidden="true">Haz clic en la vista para mirar con el ratón · Esc para soltarlo</div>
         <div id="streak-chip" aria-live="polite"></div>
         <div id="drift-meter" aria-hidden="true"><span id="drift-label">DERRAPE</span><div class="bar"><i id="drift-bar"></i></div></div>
         <canvas id="minimap" width="180" height="137" aria-label="Minimapa de la ciudad"></canvas>
@@ -84,7 +87,7 @@
           </div>
           <div class="touch-right">
             <button class="touch-btn touch-action" id="touch-interact" aria-label="Cargar o entregar">E</button>
-            <button class="touch-btn touch-drift" data-hold="drift" aria-label="Derrapar (mantener pulsado)">⤿</button>
+            <button class="touch-btn touch-drift" data-hold="drift" aria-label="Saltar a pie · derrapar al volante (mantener pulsado)">⤿</button>
             <button class="touch-btn" data-hold="down" aria-label="Frenar o marcha atrás">▼</button>
             <button class="touch-btn" data-hold="up" aria-label="Acelerar">▲</button>
           </div>
@@ -94,11 +97,6 @@
       <div id="toasts" role="status" aria-live="polite"></div>
       <div id="banner-root"></div>
     </main>
-
-    <aside id="dock" aria-label="Paneles de gestión">
-      <nav id="dock-tabs" role="tablist" aria-label="Paneles"></nav>
-      <section id="dock-panel" role="tabpanel" tabindex="-1"></section>
-    </aside>
   </div>
 
   <div id="modal-root"></div>

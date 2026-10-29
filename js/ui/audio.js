@@ -117,6 +117,7 @@ export class Sfx {
       case 'hire': [392, 494, 587].forEach((f, i) => this.tone(f, 0.22, { type: 'triangle', volume: 0.3, delay: i * 0.06 })); break;
       case 'error': this.tone(170, 0.18, { type: 'sawtooth', volume: 0.2, slideTo: 110 }); break;
       case 'crash': this.noise(0.22, 0.35); this.tone(90, 0.2, { type: 'square', volume: 0.25, slideTo: 50 }); break;
+      case 'jump': this.tone(300, 0.12, { type: 'triangle', volume: 0.12, slideTo: 520 }); break;
       // Farola derribada: golpe metálico y cristal de la bombilla
       case 'lamp':
         this.tone(520, 0.28, { type: 'triangle', volume: 0.22, slideTo: 260 });

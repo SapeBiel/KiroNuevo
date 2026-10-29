@@ -7,8 +7,11 @@ import { TILE } from '../config/constants.js';
 import { ZONES } from '../config/zones.js';
 import { createRng } from '../core/random.js';
 import { layoutLots } from '../world/cityMap.js';
+import { houseLayout, villaLayout } from '../world/lotLayout.js';
+import { DOOR_HALF, OPENING_HEIGHT } from '../world/depotLayout.js';
 import {
-  getAwningTexture, getHazardTexture, getWallTextures, makeCanvas, makeDepotRoofTexture, makeHelipadTexture, makeSignTexture, toTexture,
+  getAwningTexture, getHazardTexture, getWallTextures, makeCanvas, makeDepotRoofTexture, makeDepotSignTexture, makeHelipadTexture,
+  makeSignTexture, toTexture,
 } from './textures3d.js';
 
 const HOUSE_ROOFS = ['#c8644f', '#5d6b82', '#8a5a44', '#5f8f6a', '#d9a441', '#7a5c8a'];
@@ -20,6 +23,8 @@ const LOCKED_TINT = new THREE.Color('#1a2238');
 // ------------------------------------------------------------ Recursos ----
 
 const unitBox = new THREE.BoxGeometry(1, 1, 1);
+// Cara que no se dibuja (la fachada abierta del almacén)
+const HIDDEN_FACE = new THREE.MeshBasicMaterial({ visible: false });
 const unitCylinder = new THREE.CylinderGeometry(1, 1, 1, 14);
 const unitPrism = makeUnitPrism();
 const wallGeometries = new Map();
@@ -231,12 +236,12 @@ function buildOne(b, locked, extraTextures, decor = false) {
   const door = (w, h, color = '#4a3b2f') => {
     box(w, h, 2, doorOffset, 0, side * (fd / 2 + 0.6), color);
   };
-  const sign = (text, y, width, bg = '#1c2536', fg = '#ffffff') => {
-    if (locked || decor) return;
-    const texture = makeSignTexture(text, { bg, fg });
+  const sign = (text, y, width, bg = '#1c2536', fg = '#ffffff', ready = null, z = side * (fd / 2 + 0.7)) => {
+    if (locked || decor) { ready?.dispose(); return; }
+    const texture = ready ?? makeSignTexture(text, { bg, fg });
     extraTextures.push(texture);
     const material = new THREE.MeshLambertMaterial({ map: texture, emissive: new THREE.Color('#ffffff'), emissiveMap: texture, emissiveIntensity: 0.12 });
-    decal(width, width * 48 / 256, material, doorOffset, y, side * (fd / 2 + 0.7), { flip: side < 0 });
+    decal(width, width * 48 / 256, material, doorOffset, y, z, { flip: side < 0 });
   };
 
   const variant = b.variant;
@@ -247,14 +252,8 @@ function buildOne(b, locked, extraTextures, decor = false) {
       // Parcela con jardín delantero: la casa se retira hacia el fondo y deja sitio a porche, camino y seto
       const h = 30;
       const roofH = 22;
-      // Las parcelas estrechas (2 casillas) no tienen sitio para el garaje
-      const garage = variant % 2 === 0 && fw >= 80;
-      const bw = garage ? fw * 0.6 : fw * 0.72;
-      const bd = fd * 0.58;
-      // Con garaje la casa se pega a un lado para que el garaje quepa en la parcela
-      const bx = garage ? -fw / 2 + 4 + bw / 2 : 0;
-      const bz = -side * fd * 0.14;
-      const front = bz + side * (bd / 2);
+      // Misma distribución que las colisiones (world/lotLayout.js)
+      const { garage, bw, bd, bx, bz, front, gx, garageWidth, garageDepth, garageZ } = houseLayout(b);
       const wallColor = HOUSE_WALLS[variant % HOUSE_WALLS.length];
       const roofColor = HOUSE_ROOFS[variant % HOUSE_ROOFS.length];
       lawn();
@@ -282,10 +281,9 @@ function buildOne(b, locked, extraTextures, decor = false) {
       const pathEnd = side * (fd / 2);
       box(11, 0.6, Math.abs(pathEnd - pathStart), doorOffset + bx, 1.2, (pathStart + pathEnd) / 2, '#ddd2bd');
       // Garaje adosado con puerta basculante
-      const gx = bx + bw / 2 + 14;
       if (garage) {
-        walls(26, 24, bd * 0.86, 'home', wallColor, '#b9b1a3', gx, 1, bz + side * bd * 0.07);
-        box(28, 2, bd * 0.86 + 2, gx, 25, bz + side * bd * 0.07, '#6b6f78');
+        walls(garageWidth, 24, garageDepth, 'home', wallColor, '#b9b1a3', gx, 1, garageZ);
+        box(garageWidth + 2, 2, garageDepth + 2, gx, 25, garageZ, '#6b6f78');
         box(22, 18, 1.2, gx, 1, bz + side * (bd * 0.5 + 0.6), '#d9dde3');
         for (let i = 1; i < 5; i++) box(22, 0.5, 1.4, gx, 1 + i * 3.6, bz + side * (bd * 0.5 + 0.7), '#aeb4bd');
         box(22, 0.6, Math.abs(pathEnd - (bz + side * bd * 0.5)), gx, 1.2, (pathEnd + bz + side * bd * 0.5) / 2, '#b8b2a6');
@@ -315,10 +313,7 @@ function buildOne(b, locked, extraTextures, decor = false) {
     }
     case 'villa': {
       const h = 34;
-      const bw = fw * 0.66;
-      const bd = fd * 0.56;
-      const bz = -side * fd * 0.16;
-      const front = bz + side * (bd / 2);
+      const { bw, bd, bz, front, doorX, pool } = villaLayout(b);
       lawn();
       box(bw + 3, 3, bd + 3, 0, 1, bz, '#a7a29a');
       walls(bw, h, bd, 'home', '#f6f3ec', '#d9d4c8', 0, 3, bz);
@@ -334,17 +329,13 @@ function buildOne(b, locked, extraTextures, decor = false) {
         panel.rotation.x = -0.25;
       }
       // Gran ventanal y puerta (con camino hasta la acera)
-      const doorX = -bw * 0.28;
       box(bw * 0.4, 18, 1.2, bw * 0.18, 4, front + side * 0.7, '#6f95b8');
       box(14, 22, 1.6, doorX, 3, front + side * 0.9, '#3a3f47');
       const edge = side * (fd / 2);
       box(10, 0.6, Math.abs(edge - front), doorX, 1.2, (edge + front) / 2, '#ddd2bd');
       // Piscina con borde y agua, a un lado del camino
-      const yard = fd / 2 - Math.abs(front);
-      const poolDepth = Math.max(10, yard - 16);
-      const poolZ = front + side * (4 + (poolDepth + 4) / 2);
-      box(bw * 0.46, 1.6, poolDepth + 4, bw * 0.22, 0.6, poolZ, '#e8e2d6');
-      add(unitBox, waterMaterial(locked), bw * 0.22, 2.3, poolZ, bw * 0.42, 0.4, poolDepth);
+      box(pool.w, 1.6, pool.d, pool.x, 0.6, pool.z, '#e8e2d6');
+      add(unitBox, waterMaterial(locked), pool.x, 2.3, pool.z, pool.waterW, 0.4, pool.waterD);
       // Seto delantero con hueco para el camino
       const hedgeZ = side * (fd / 2 - 3);
       const leftEnd = doorX - 6;
@@ -443,17 +434,39 @@ function buildOne(b, locked, extraTextures, decor = false) {
     }
     case 'depot': {
       const h = 64;
-      walls(fw, h, fd, 'depot', '#fff3c9', '#e8a000');
+      // Fachada abierta: un gran hueco de carga por el que se ve el interior y se entra a pie por la puerta
+      // peatonal de la barandilla (el interior lo construye depotInterior3d.js con world/depotLayout.js)
+      const wall = wallMaterial('depot', '#fff3c9', locked);
+      const roof = plain(dimmed('#e8a000', locked));
+      const faces = [wall, wall, roof, roof, wall, wall];
+      faces[side > 0 ? 4 : 5] = HIDDEN_FACE;
+      add(wallGeometry(fw, h, fd, 'depot'), faces, 0, h / 2, 0);
       box(fw + 4, 4, fd + 4, 0, h, 0, '#ffb703');
       const texture = makeDepotRoofTexture();
       extraTextures.push(texture);
       const logoW = fw - 24;
       decal(logoW, logoW * 192 / 512, new THREE.MeshLambertMaterial({ map: texture }), 0, h + 4.4, 0, { flat: true });
-      for (let i = 0; i < 4; i++) {
-        box(30, 30, 2, -fw * 0.36 + i * fw * 0.24, 0, side * (fd / 2 + 0.7), '#4b5563');
-        box(34, 3, 2.4, -fw * 0.36 + i * fw * 0.24, 30, side * (fd / 2 + 0.7), '#d9dde4');
+      const frontZ = side * (fd / 2 - 1.5);
+      // Dintel sobre el hueco, viga y pilares de las esquinas
+      box(fw, h - OPENING_HEIGHT, 3, 0, OPENING_HEIGHT, frontZ, '#fff3c9');
+      box(fw + 0.5, 3, 3.6, 0, OPENING_HEIGHT - 3, frontZ, '#4b5563');
+      for (const px of [-fw / 2 + 2, fw / 2 - 2]) box(4, OPENING_HEIGHT - 3, 4, px, 0, frontZ, '#d9dde4');
+      // Barandilla amarilla con la puerta peatonal en el centro (los vehículos no caben)
+      const gapL = doorOffset - DOOR_HALF;
+      const gapR = doorOffset + DOOR_HALF;
+      for (const [a, c] of [[-fw / 2, gapL], [gapR, fw / 2]]) {
+        const len = c - a;
+        if (len <= 1) continue;
+        box(len, 1.6, 1.8, (a + c) / 2, 8, frontZ, '#ffb703');
+        box(len, 1.1, 1.4, (a + c) / 2, 4, frontZ, '#ffb703');
+        for (let x = a + 1; x <= c - 1; x += Math.max(6, len / Math.max(1, Math.round(len / 14)))) {
+          box(1.4, 9.6, 1.4, x, 0, frontZ, '#1d2230');
+        }
       }
-      sign('PARCEL EMPIRE', 50, 130, '#ffb703', '#4a2f10');
+      for (const gx of [gapL, gapR]) add(unitCylinder, plain('#1d2230'), gx, 6, frontZ, 1.5, 12, 1.5);
+      box(DOOR_HALF * 2, 0.4, 4, doorOffset, 0.5, frontZ, '#ffb703'); // umbral de la puerta peatonal
+      // Rótulo con el nombre y el color de la empresa (se repinta en el sitio si el jugador los cambia)
+      sign('', 50, 130, '', '', makeDepotSignTexture());
       top = h + 4;
       break;
     }

@@ -14,6 +14,8 @@ import {
 } from '../config/packages.js';
 import { createRng, choice, randomInt, weightedChoice } from '../core/random.js';
 import { clamp } from '../core/util.js';
+import { hasGarden, gardenColliders } from './lotLayout.js';
+import { depotColliders, depotLayout, playerParkSpot } from './depotLayout.js';
 
 /** Reparto de parcelas dentro de una manzana de w x h casillas (cada parcela: dx, dy, w, h, puerta). */
 export function layoutLots(layoutId, w, h) {
@@ -103,6 +105,35 @@ function buildingNameFor(kind, rng) {
   }
 }
 
+// Colisión de los árboles: un poco menor que la copa dibujada, para que se pueda pasar rozándolos
+const TREE_COLLISION_SCALE = 0.75;
+const MAX_TREE_COLLIDER = 16 * TREE_COLLISION_SCALE; // radio máximo (r va de 9 a 16)
+const PARK_PATH_CLEARANCE = 7; // px libres a cada lado del eje de los caminos
+
+function distanceToSegment(px, py, ax, ay, bx, by) {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const lengthSq = dx * dx + dy * dy || 1;
+  const t = clamp(((px - ax) * dx + (py - ay) * dy) / lengthSq, 0, 1);
+  return Math.hypot(px - (ax + dx * t), py - (ay + dy * t));
+}
+
+/** ¿El árbol queda fuera del estanque y de los dos caminos diagonales (los mismos que dibuja mapLayer)? */
+function isTreeSpotClear(park, tree) {
+  const reach = tree.r * TREE_COLLISION_SCALE;
+  const { pond } = park;
+  const ex = (tree.x - pond.x) / (pond.rx + reach);
+  const ey = (tree.y - pond.y) / (pond.ry + reach);
+  if (ex * ex + ey * ey < 1) return false;
+  const x0 = park.x + 14;
+  const y0 = park.y + 14;
+  const x1 = park.x + park.w - 14;
+  const y1 = park.y + park.h - 14;
+  const minGap = reach + PARK_PATH_CLEARANCE;
+  return distanceToSegment(tree.x, tree.y, x0, y0, x1, y1) >= minGap
+    && distanceToSegment(tree.x, tree.y, x1, y0, x0, y1) >= minGap;
+}
+
 function shuffled(rng, list) {
   const copy = list.slice();
   for (let i = copy.length - 1; i > 0; i--) {
@@ -143,8 +174,9 @@ function generateCity(seed, allowMerges) {
   // El almacén necesita una manzana de al menos 6 x 6 con calles anchas a su lado
   const depotBc = Math.floor(BX * DEPOT_POSITION.x);
   const depotBr = Math.floor(BY * DEPOT_POSITION.y);
-  colW[depotBc] = Math.max(colW[depotBc], 6);
-  rowH[depotBr] = Math.max(rowH[depotBr], 6);
+  // El almacén es una nave con oficina, cinta transportadora y puestos de trabajo: necesita 9 x 8 casillas
+  colW[depotBc] = Math.max(colW[depotBc], 9);
+  rowH[depotBr] = Math.max(rowH[depotBr], 8);
   hRoadW[depotBr + 1] = Math.max(hRoadW[depotBr + 1], 3);
 
   // --- Posiciones (en casillas)
@@ -236,6 +268,35 @@ function generateCity(seed, allowMerges) {
   const markSolid = (tx, ty, w, h) => {
     for (let y = ty; y < ty + h; y++) for (let x = tx; x < tx + w; x++) solidBase[tileIndex(x, y)] = 1;
   };
+  // Obstáculos rectangulares a medida (casas y villas con jardín): se guardan en cada casilla que tocan
+  const rectGrid = new Map(); // índice de casilla -> [{ x0, y0, x1, y1, stamp }]
+  const rectColliders = [];
+  let rectStamp = 0;
+  const addRectCollider = (rect) => {
+    const collider = { ...rect, stamp: 0 };
+    rectColliders.push(collider);
+    const tx0 = Math.max(0, Math.floor(rect.x0 / TILE));
+    const tx1 = Math.min(W - 1, Math.floor((rect.x1 - 0.001) / TILE));
+    const ty0 = Math.max(0, Math.floor(rect.y0 / TILE));
+    const ty1 = Math.min(H - 1, Math.floor((rect.y1 - 0.001) / TILE));
+    for (let ty = ty0; ty <= ty1; ty++) {
+      for (let tx = tx0; tx <= tx1; tx++) {
+        const index = tileIndex(tx, ty);
+        if (!rectGrid.has(index)) rectGrid.set(index, []);
+        rectGrid.get(index).push(collider);
+      }
+    }
+  };
+  // Árboles de los parques: cada uno se guarda en la casilla de su centro para consultarlos rápido
+  const treeGrid = new Map(); // índice de casilla -> [{ x, y, r }]
+  const treeColliders = [];
+  const addTreeCollider = (tree) => {
+    const collider = { x: tree.x, y: tree.y, r: tree.r * TREE_COLLISION_SCALE };
+    const index = tileIndex(Math.floor(tree.x / TILE), Math.floor(tree.y / TILE));
+    if (!treeGrid.has(index)) treeGrid.set(index, []);
+    treeGrid.get(index).push(collider);
+    treeColliders.push(collider);
+  };
   const buildings = [];
   const parks = [];
   const plazas = [];
@@ -278,23 +339,34 @@ function generateCity(seed, allowMerges) {
       droneOk: BUILDING_KINDS[kind]?.droneOk ?? false,
     };
     building.address = `${building.street} ${building.number}`;
-    markSolid(tx, ty, w, h);
+    if (hasGarden(building)) {
+      // Casas y villas: choca la casa (y el porche o la piscina), pero el jardín, el seto y los arbustos no
+      for (const rect of gardenColliders(building)) addRectCollider(rect);
+    } else {
+      markSolid(tx, ty, w, h);
+    }
     buildings.push(building);
     return building;
   }
 
   function addPark(block) {
+    // El césped, los caminos y el estanque son transitables: solo los árboles bloquean el paso
     const { ox, oy, w, h, zoneId, bc, br } = block;
-    markSolid(ox, oy, w, h);
-    const trees = [];
+    const candidates = [];
     const count = Math.round((w * h) / 36 * 14);
     for (let i = 0; i < count; i++) {
-      trees.push({ x: (ox + 0.6 + rng() * (w - 1.2)) * TILE, y: (oy + 0.6 + rng() * (h - 1.2)) * TILE, r: 9 + rng() * 7 });
+      candidates.push({ x: (ox + 0.6 + rng() * (w - 1.2)) * TILE, y: (oy + 0.6 + rng() * (h - 1.2)) * TILE, r: 9 + rng() * 7 });
     }
-    parks.push({
-      bc, br, zoneId, x: ox * TILE, y: oy * TILE, w: w * TILE, h: h * TILE, size: Math.min(w, h) * TILE, trees,
+    const park = {
+      bc, br, zoneId, x: ox * TILE, y: oy * TILE, w: w * TILE, h: h * TILE, size: Math.min(w, h) * TILE, trees: [],
       pond: { x: (ox + w / 2) * TILE, y: (oy + h / 2) * TILE, rx: Math.min(w, 8) * 7 + rng() * 14, ry: Math.min(h, 8) * 4.5 + rng() * 10 },
-    });
+      tiles: { tx: ox, ty: oy, w, h },
+    };
+    // Se descartan los árboles que caerían sobre el estanque o los caminos, para dejar paso libre.
+    // (Se generan todos los candidatos igualmente para no alterar la secuencia aleatoria del resto del mapa.)
+    park.trees = candidates.filter((tree) => isTreeSpotClear(park, tree));
+    for (const tree of park.trees) addTreeCollider(tree);
+    parks.push(park);
   }
 
   function addPlaza(block) {
@@ -342,7 +414,7 @@ function generateCity(seed, allowMerges) {
         const y = oy * TILE;
         const pw = w * TILE;
         const ph = (h - 2) * TILE;
-        markSolid(ox, oy, w, h - 2);
+        // El almacén ya no es un bloque macizo: se puede entrar a pie (ver depotLayout.js)
         const dropY = (roadBottom.y + roadBottom.w / 2) * TILE;
         depot = {
           id: 'depot', kind: 'depot', zoneId, bc, br, tx: ox, ty: oy, w, h: h - 2,
@@ -357,6 +429,10 @@ function generateCity(seed, allowMerges) {
           startX: x + pw / 2 - 4.5 * TILE,
           startY: dropY,
         };
+        // Paredes, barandilla de la fachada, estanterías, mesa y zona de expedición
+        for (const rect of depotColliders(depot)) addRectCollider(rect);
+        depot.park = playerParkSpot(depot);
+        depot.walkStart = depotLayout(depot).walkStart;
         continue;
       }
 
@@ -401,6 +477,22 @@ function generateCity(seed, allowMerges) {
     const cy = road.y + Math.floor(road.w / 2);
     for (let tx = 0; tx < W; tx++) roadNode[tileIndex(tx, cy)] = 1;
   }
+  // Parques y parcelas con jardín ya no son casillas sólidas, pero no forman parte de la red de calles:
+  // las rutas automáticas no deben cruzarlos, ni siquiera por el tramo de calle que absorbe una supermanzana.
+  const lotTiles = new Uint8Array(N); // parcelas de edificios (para las barreras de zonas bloqueadas)
+  for (const b of buildings) {
+    for (let ty = b.ty; ty < b.ty + b.h; ty++) {
+      for (let tx = b.tx; tx < b.tx + b.w; tx++) {
+        roadNode[tileIndex(tx, ty)] = 0;
+        lotTiles[tileIndex(tx, ty)] = 1;
+      }
+    }
+  }
+  for (const { tiles } of parks) {
+    for (let ty = tiles.ty; ty < tiles.ty + tiles.h; ty++) {
+      for (let tx = tiles.tx; tx < tiles.tx + tiles.w; tx++) roadNode[tileIndex(tx, ty)] = 0;
+    }
+  }
 
   const unlockedByIndex = new Array(ZONE_ORDER.length).fill(false);
   let version = 0;
@@ -411,17 +503,80 @@ function generateCity(seed, allowMerges) {
     return solidBase[index] === 1 || !unlockedByIndex[tileZoneIndex[index]];
   }
 
+  /** Casilla ocupada por un edificio o su parcela (solo para dibujar barreras; no implica colisión). */
   function isSolidBuildingTile(tx, ty) {
     if (tx < 0 || ty < 0 || tx >= W || ty >= H) return true;
-    return solidBase[tileIndex(tx, ty)] === 1;
+    const index = tileIndex(tx, ty);
+    return solidBase[index] === 1 || lotTiles[index] === 1;
   }
 
   function zoneIdAtTile(tx, ty) {
     return ZONE_ORDER[tileZoneIndex[tileIndex(clamp(tx, 0, W - 1), clamp(ty, 0, H - 1))]];
   }
 
-  /** ¿Un círculo choca contra algún obstáculo (edificio, límite del mapa o zona bloqueada)? */
-  function circleHitsSolid(cx, cy, radius) {
+  /** Llama a visit(tree) para cada árbol que podría tocar un círculo de ese radio. */
+  function forEachTreeNear(cx, cy, radius, visit) {
+    if (!treeColliders.length) return;
+    const reach = radius + MAX_TREE_COLLIDER;
+    const minTx = Math.max(0, Math.floor((cx - reach) / TILE));
+    const maxTx = Math.min(W - 1, Math.floor((cx + reach) / TILE));
+    const minTy = Math.max(0, Math.floor((cy - reach) / TILE));
+    const maxTy = Math.min(H - 1, Math.floor((cy + reach) / TILE));
+    for (let ty = minTy; ty <= maxTy; ty++) {
+      for (let tx = minTx; tx <= maxTx; tx++) {
+        const list = treeGrid.get(tileIndex(tx, ty));
+        if (list) for (const tree of list) visit(tree);
+      }
+    }
+  }
+
+  /** Llama a visit(rect) una sola vez por cada obstáculo rectangular que podría tocar el círculo. */
+  function forEachRectNear(cx, cy, radius, visit) {
+    if (!rectColliders.length) return;
+    const stamp = ++rectStamp;
+    const minTx = Math.max(0, Math.floor((cx - radius) / TILE));
+    const maxTx = Math.min(W - 1, Math.floor((cx + radius) / TILE));
+    const minTy = Math.max(0, Math.floor((cy - radius) / TILE));
+    const maxTy = Math.min(H - 1, Math.floor((cy + radius) / TILE));
+    for (let ty = minTy; ty <= maxTy; ty++) {
+      for (let tx = minTx; tx <= maxTx; tx++) {
+        const list = rectGrid.get(tileIndex(tx, ty));
+        if (!list) continue;
+        for (const rect of list) {
+          if (rect.stamp === stamp) continue; // ya visitado (ocupa varias casillas)
+          rect.stamp = stamp;
+          visit(rect);
+        }
+      }
+    }
+  }
+
+  function circleHitsRect(cx, cy, radius, walker = false) {
+    let hit = false;
+    forEachRectNear(cx, cy, radius, (rect) => {
+      if (hit || (walker && rect.vehicleOnly)) return;
+      const dx = cx - clamp(cx, rect.x0, rect.x1);
+      const dy = cy - clamp(cy, rect.y0, rect.y1);
+      if (dx * dx + dy * dy < radius * radius) hit = true;
+    });
+    return hit;
+  }
+
+  function circleHitsTree(cx, cy, radius) {
+    let hit = false;
+    forEachTreeNear(cx, cy, radius, (tree) => {
+      const min = radius + tree.r;
+      if (!hit && (cx - tree.x) ** 2 + (cy - tree.y) ** 2 < min * min) hit = true;
+    });
+    return hit;
+  }
+
+  /**
+   * ¿Un círculo choca contra algún obstáculo (edificio, árbol, límite del mapa o zona bloqueada)?
+   * Con { walker: true } se comprueba para una persona: puede cruzar la puerta peatonal del almacén.
+   */
+  function circleHitsSolid(cx, cy, radius, { walker = false } = {}) {
+    if (circleHitsTree(cx, cy, radius) || circleHitsRect(cx, cy, radius, walker)) return true;
     const minTx = Math.floor((cx - radius) / TILE);
     const maxTx = Math.floor((cx + radius) / TILE);
     const minTy = Math.floor((cy - radius) / TILE);
@@ -514,6 +669,11 @@ function generateCity(seed, allowMerges) {
     zoneIdAtTile,
     zoneIdAtPoint: (px, py) => zoneIdAtTile(Math.floor(px / TILE), Math.floor(py / TILE)),
     circleHitsSolid,
+    circleHitsTree,
+    forEachTreeNear,
+    forEachRectNear,
+    rectColliders,
+    treeColliders,
     setUnlockedZones(zoneFlags) {
       ZONE_ORDER.forEach((id, index) => { unlockedByIndex[index] = Boolean(zoneFlags[id]); });
       version++;

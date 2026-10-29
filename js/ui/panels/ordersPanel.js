@@ -6,6 +6,7 @@ import { formatDistanceMeters, formatDuration, formatMoney, formatInt, pad } fro
 import { compareOrders, etaSeconds, storageUsed, cargoSlotsUsed, playerCapacity } from '../../systems/orders.js';
 import { rewardPreview } from '../../systems/economy.js';
 import { bar } from '../dom.js';
+import { ITEM_AT_LABELS, getShelf } from '../../config/products.js';
 import { attr, chip, emptyState } from './shared.js';
 
 export function renderOrdersPanel(game) {
@@ -15,22 +16,23 @@ export function renderOrdersPanel(game) {
   const inDepot = game.isPlayerInDepot();
   const used = cargoSlotsUsed(game);
   const capacity = playerCapacity(game);
-  const context = game.getContextAction();
+  const guide = game.getFootGuide();
 
   let html = `
     <div class="panel-head">
       <h3>📦 Pedidos</h3>
       <div class="chips">
-        ${chip(`Activos ${state.orders.length}/${derived.maxActiveOrders}`, 'Pedidos activos / máximo permitido. Mejora "Más pedidos activos" o la sede para ampliar.')}
+        ${chip(`Activos ${state.orders.length}/${derived.maxActiveOrders}`, 'Pedidos activos / máximo permitido. Mejora "Más pedidos activos" o la sede para ampliar. Cada repartidor y cada dron añade un hueco más.')}
         ${chip(`Almacén ${storageUsed(state)}/${derived.storageCapacity}`, 'Huecos ocupados por pedidos esperando en el almacén.')}
       </div>
     </div>
     <div class="cargo-box ${used ? 'has-cargo' : ''}">
       <div class="cargo-line"><span>🚐 Tu vehículo</span><b>${used}/${capacity} huecos</b></div>
       ${bar(capacity ? (used / capacity) * 100 : 0, 'bar-cargo')}
-      <p class="muted">${inDepot
-    ? (context?.kind === 'load' ? `Estás en el almacén. Pulsa <kbd>E</kbd> para ${context.label.toLowerCase()}.` : 'Estás en el almacén.')
-    : used ? 'Ve hasta el pin de color (también en el minimapa) y pulsa <kbd>E</kbd> en su círculo.' : 'Ve al almacén (círculo amarillo) para cargar pedidos.'}</p>
+      <p class="muted">${guide ? attr(guide.text) : game.onFoot
+    ? 'Coge los productos de la cinta, empaquétalos en tu mesa, deja la caja en expedición y cárgala por la trasera del vehículo.'
+    : used ? 'Conduce hasta el pin de color (también en el minimapa), bájate con <kbd>E</kbd> y lleva la caja a la puerta.'
+      : inDepot ? 'Bájate con <kbd>E</kbd> y entra en el almacén para preparar los pedidos.' : 'Vuelve al almacén (círculo amarillo) para preparar pedidos.'}</p>
     </div>`;
 
   if (!orders.length) {
@@ -61,10 +63,23 @@ function renderOrderCard(game, order, playerStats, inDepot) {
     ? (state.workers.find((w) => w.id === order.assignedTo)?.name ?? state.drones.find((d) => d.id === order.assignedTo)?.name ?? 'Equipo')
     : null;
 
+  const inCargo = state.player.cargo.includes(order.id);
+  const inHands = state.player.hands.box === order.id;
+  const picking = mine && order.handling === 'picking';
   let statusText = STATUS_LABELS[order.status];
   let statusClass = order.status;
-  if (otherAssignee) { statusText = `En reparto · ${otherAssignee}`; statusClass = 'in_transit'; }
-  else if (!mine && order.prep > 0) { statusText = 'Preparando'; statusClass = 'prep'; }
+  const staffPrep = Boolean(otherAssignee) && order.handling === 'staff';
+  if (staffPrep) {
+    statusText = order.prep > 0 ? `Preparando · ${otherAssignee}` : `A expedición · ${otherAssignee}`;
+    statusClass = 'prep';
+  } else if (otherAssignee) { statusText = `En reparto · ${otherAssignee}`; statusClass = 'in_transit'; }
+  else if (picking) { statusText = 'Reuniendo productos'; statusClass = 'prep'; }
+  else if (inHands) { statusText = 'Caja en tus manos'; statusClass = 'picked'; }
+  else if (inCargo) { statusText = order.status === 'in_transit' ? 'En reparto · tu vehículo' : 'Cargado en tu vehículo'; statusClass = order.status; }
+  else if (!mine && order.prep > 0) {
+    statusText = game.derived.prepLanes > 0 ? 'Por preparar' : 'Por preparar · a mano';
+    statusClass = 'prep';
+  } else if (!mine && order.prep <= 0) { statusText = 'Listo en expedición'; statusClass = 'pending'; }
 
   const prepPercent = order.prepTotal ? (1 - order.prep / order.prepTotal) * 100 : 100;
   const tracked = game.trackedOrderId === order.id;
@@ -75,22 +90,26 @@ function renderOrderCard(game, order, playerStats, inDepot) {
     timer = `<div class="timer"><span>${order.late ? '⏰ Con retraso: -45 % de recompensa' : `⏰ Quedan ${formatDuration(order.timeLeft)}`}</span>
       ${bar(order.late ? 100 : (order.timeLeft / order.timeTotal) * 100, urgentClass)}</div>`;
   }
-  const prep = !mine && !otherAssignee && order.prep > 0
-    ? `<div class="timer"><span>📋 Preparando pedido…</span>${bar(prepPercent, 'bar-prep')}</div>` : '';
+  const prep = staffPrep && order.prep > 0 && order.prep < order.prepTotal
+    ? `<div class="timer"><span>📋 ${attr(otherAssignee)} lo está empaquetando…</span>${bar(prepPercent, 'bar-prep')}</div>` : '';
 
+  // Productos del pedido y dónde está cada uno (recepción, cinta, cajón, manos, mesa o caja)
+  const items = (order.items ?? []).map((item) => {
+    const [icon, where] = ITEM_AT_LABELS[item.at] ?? ['⬜', ''];
+    return `<li style="--shelf:${getShelf(item.shelf).color}" data-tip="${attr(where)} · categoría ${item.shelf} (${attr(getShelf(item.shelf).name)})">
+      <span aria-hidden="true">${icon}</span> ${attr(item.name)} <em>${item.shelf}</em></li>`;
+  }).join('');
+
+  // Solo acciones de gestión: preparar, cargar y entregar se hacen en persona en el almacén y en la calle
+  const track = `<button class="btn ${tracked ? 'is-active' : ''}" data-action="track" data-id="${order.id}" data-tip="Prioriza este pedido al recoger y resalta su destino en el mapa">📍 ${tracked ? 'Siguiendo' : 'Rastrear'}</button>`;
   let actions = '';
-  if (!order.assignedTo) {
-    const check = game.canLoadOrder(order);
-    const reason = check.ok ? '' : check.reason;
-    actions = `
-      <button class="btn ${check.ok ? 'btn-primary' : 'is-disabled'}" data-action="load" data-id="${order.id}" aria-disabled="${!check.ok}" data-reason="${attr(reason)}" ${reason ? `data-tip="${attr(reason)}"` : ''}>📥 Cargar</button>
-      <button class="btn ${tracked ? 'is-active' : ''}" data-action="track" data-id="${order.id}" data-tip="Resaltar este destino en el mapa y en el Parcel Nav">📍 ${tracked ? 'Siguiendo' : 'Rastrear'}</button>
+  if (!order.assignedTo || picking) {
+    actions = `${track}
       <button class="btn btn-ghost" data-action="reject" data-id="${order.id}" data-tip="Descartar el pedido${order.priority === 'urgent' ? ' (pierdes 1 de reputación)' : ''}">✖</button>`;
   } else if (mine) {
-    actions = `
-      <button class="btn ${tracked ? 'is-active' : ''}" data-action="track" data-id="${order.id}">📍 ${tracked ? 'Siguiendo' : 'Rastrear'}</button>
-      <button class="btn ${inDepot ? '' : 'is-disabled'}" data-action="unload" data-id="${order.id}" aria-disabled="${!inDepot}" data-reason="Vuelve al almacén para descargar" ${inDepot ? '' : 'data-tip="Vuelve al almacén para descargar"'}>↩ Descargar</button>`;
+    actions = track;
   }
+  void inDepot;
 
   return `
     <article class="card order priority-${order.priority} status-${statusClass}" style="--kind:${kind.color}">
@@ -107,6 +126,7 @@ function renderOrderCard(game, order, playerStats, inDepot) {
         <li data-tip="Tiempo estimado con tu vehículo actual">⏱ ~${formatDuration(etaSeconds(order, playerStats.maxSpeed))}</li>
         <li data-tip="Huecos de carga necesarios y peso">🧳 ${order.slots} hueco${order.slots > 1 ? 's' : ''} · ${order.weight} kg</li>
       </ul>
+      ${items ? `<ul class="order-items" aria-label="Productos del pedido">${items}</ul>` : ''}
       ${timer}${prep}
       ${actions ? `<footer class="card-actions">${actions}</footer>` : ''}
     </article>`;

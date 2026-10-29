@@ -5,16 +5,20 @@ import { levelTitle, xpToNextLevel } from '../config/levels.js';
 import { TUTORIAL_STEPS } from '../config/tutorial.js';
 import { ORDER_KINDS } from '../config/packages.js';
 import { getVehicleType } from '../config/vehicles.js';
-import { distance, formatDuration, formatInt, formatMoney, escapeHtml } from '../core/util.js';
+import { distance, formatDuration, formatInt, formatMoney, escapeHtml, pad } from '../core/util.js';
 import { clockHour, formatClock } from '../systems/dayCycle.js';
 import { incomePerMinute } from '../systems/economy.js';
 import { cargoSlotsUsed, getOrder, playerCapacity } from '../systems/orders.js';
 import { $, bar, setHtml, setStyle, setText } from './dom.js';
+import { HAND_CAPACITY, ITEM_AT_LABELS, productInfo } from '../config/products.js';
+import { handsBulk, heldBox, heldItems, isPlayerPicking } from '../systems/handling.js';
 import { BOOST_MIN_TIME, getDrift } from '../systems/playerVehicle.js';
 
 export class Hud {
-  constructor({ game, onInteract, onSkipTutorial, onAckTutorial }) {
+  constructor({ game, getViewMode = () => '2d', onInteract, onSkipTutorial, onAckTutorial }) {
     this.game = game;
+    this.getViewMode = getViewMode;
+    this.pointerLocked = false;
     this.displayedMoney = game.state.money;
     this.timer = 0;
     this.el = {
@@ -24,6 +28,7 @@ export class Hud {
       dayBar: $('#hud-day-bar'), cargo: $('#cargo-card'), context: $('#context-action'), streak: $('#streak-chip'),
       tutorial: $('#tutorial-card'), contextLabel: $('#context-label'),
       drift: $('#drift-meter'), driftLabel: $('#drift-label'), driftBar: $('#drift-bar'),
+      hands: $('#hands-card'), crosshair: $('#crosshair'), lookHint: $('#look-hint'),
     };
     this.onSkipTutorial = onSkipTutorial;
     this.onAckTutorial = onAckTutorial;
@@ -50,6 +55,12 @@ export class Hud {
     this.el.context.classList.toggle('is-visible', show);
     if (show) setText(this.el.contextLabel, ctx.label);
     this.el.context.dataset.kind = ctx?.kind ?? '';
+    this.el.context.classList.toggle('is-info', Boolean(ctx) && ctx.ok === false);
+    // Mira y aviso de captura del ratón (solo a pie en la vista 3D)
+    const firstPerson = game.onFoot && this.getViewMode() === '3d' && !game.paused;
+    this.el.crosshair?.classList.toggle('is-visible', firstPerson);
+    this.el.crosshair?.classList.toggle('is-target', firstPerson && Boolean(ctx) && ctx.ok !== false);
+    this.el.lookHint?.classList.toggle('is-visible', firstPerson && !this.pointerLocked && !document.body.classList.contains('has-touch'));
     this.updateDrift();
 
     this.timer += dt;
@@ -95,8 +106,46 @@ export class Hud {
     const hour = clockHour(state);
     setText(this.el.clockIcon, hour >= 20 || hour < 5 ? '🌙' : hour >= 18 || hour < 7 ? '🌅' : '☀️');
     this.renderCargo();
+    this.renderHands();
     this.renderStreak();
     this.renderTutorial();
+  }
+
+  setPointerLocked(locked) {
+    this.pointerLocked = locked;
+  }
+
+  /** A pie: qué llevas en las manos, qué hay en la mesa y cuál es el siguiente paso. */
+  renderHands() {
+    const { game } = this;
+    const el = this.el.hands;
+    if (!el) return;
+    if (!game.onFoot) { el.classList.remove('is-visible'); return; }
+    el.classList.add('is-visible');
+    const { state, city } = game;
+    const box = heldBox(game);
+    const items = heldItems(game);
+    let held;
+    if (box) {
+      const b = city.getBuilding(box.buildingId);
+      held = `<li style="--kind:${ORDER_KINDS[box.kind].color}"><span class="dot-kind">📦</span><span class="row-main"><b>Caja #${pad(box.number)}</b><small>${escapeHtml(b.address)}</small></span></li>`;
+    } else if (items.length) {
+      held = items.map(({ order, item }) => `<li style="--kind:${productInfo(item.name).color}"><span class="dot-kind">${item.shelf}</span><span class="row-main"><b>${escapeHtml(item.name)}</b><small>Pedido #${pad(order.number)}${productInfo(item.name).bulk >= HAND_CAPACITY ? ' · voluminoso' : ''}</small></span></li>`).join('');
+    } else {
+      held = '<li class="is-empty"><span class="row-main"><small>Manos libres</small></span></li>';
+    }
+    // Pedido que se está reuniendo: lista de productos con su estado
+    const picking = state.orders.find((o) => isPlayerPicking(o));
+    let checklist = '';
+    if (picking) {
+      checklist = `<p class="hands-order">Pedido #${pad(picking.number)} · ${picking.items.map((i) => `${(ITEM_AT_LABELS[i.at] ?? ['⬜'])[0]} ${escapeHtml(i.name)}`).join(' · ')}</p>`;
+    }
+    const guide = game.getFootGuide();
+    setHtml(el, `
+      <div class="cargo-title"><span>✋ En las manos</span><b>${box ? (box.dispatched ? 'caja registrada' : 'caja sin registrar') : `${handsBulk(game)}/${HAND_CAPACITY}`}</b></div>
+      <ul class="cargo-list">${held}</ul>
+      ${checklist}
+      ${guide ? `<p class="hands-guide">➜ ${escapeHtml(guide.text)}</p>` : ''}`);
   }
 
   renderCargo() {
@@ -106,7 +155,7 @@ export class Hud {
     const vehicle = state.vehicles.find((v) => v.id === state.player.vehicleId);
     const used = cargoSlotsUsed(game);
     const capacity = playerCapacity(game);
-    const p = state.player;
+    const p = game.getFocus();
     let rows = '';
     for (const order of cargo) {
       const b = city.getBuilding(order.buildingId);
@@ -118,7 +167,7 @@ export class Hud {
     setHtml(this.el.cargo, `
       <div class="cargo-title"><span>${getVehicleType(vehicle.typeId).icon} ${getVehicleType(vehicle.typeId).name}</span><b>${used}/${capacity}</b></div>
       ${bar(capacity ? (used / capacity) * 100 : 0, 'bar-cargo')}
-      ${rows ? `<ul class="cargo-list">${rows}</ul>` : '<p class="cargo-empty">Sin carga. Ve al almacén 🟡 y pulsa E.</p>'}`);
+      ${rows ? `<ul class="cargo-list">${rows}</ul>` : '<p class="cargo-empty">Sin carga. Prepara pedidos en el almacén 🟡 y carga las cajas por la trasera.</p>'}`);
   }
 
   renderStreak() {

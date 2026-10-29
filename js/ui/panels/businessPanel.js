@@ -1,7 +1,8 @@
 // Panel empresarial: finanzas, eficiencia, jornadas anteriores y expansión de la ciudad.
 
 import { ZONES, ZONE_ORDER } from '../../config/zones.js';
-import { formatInt, formatMoney } from '../../core/util.js';
+import { escapeHtml, formatInt, formatMoney } from '../../core/util.js';
+import { getCompany, getLogo } from '../../systems/branding.js';
 import { computeDailyCosts, incomePerMinute, autoIncomePerMinute } from '../../systems/economy.js';
 import { zoneStatus } from '../../systems/progression.js';
 import { chip } from './shared.js';
@@ -21,7 +22,19 @@ export function renderBusinessPanel(game) {
   const kpi = (icon, label, value, tip = '', cls = '') => `
     <div class="kpi ${cls}" ${tip ? `data-tip="${tip}"` : ''}><span class="kpi-icon" aria-hidden="true">${icon}</span><div><small>${label}</small><b>${value}</b></div></div>`;
 
+  const company = getCompany(state);
+  const logo = getLogo(company.logo);
   let html = `<div class="panel-head"><h3>📊 Empresa</h3><div class="chips">${chip(`Día ${state.day}`)}</div></div>
+    <article class="card brand-card">
+      <div class="card-icon brand-swatch" style="background:${company.primary}" aria-hidden="true">${logo.icon}</div>
+      <div class="card-main">
+        <h4>${escapeHtml(company.name)}</h4>
+        <p>${company.slogan ? escapeHtml(company.slogan) : 'Sin eslogan'}</p>
+        <p class="effect"><span class="swatches" aria-hidden="true"><i style="background:${company.primary}"></i><i style="background:${company.secondary}"></i><i style="background:${company.accent}"></i></span>
+          ${company.fleetColors ? 'Flota con los colores de la empresa' : 'Cada modelo con su pintura de serie'}</p>
+      </div>
+      <button class="btn btn-buy" data-action="edit-brand" data-tip="Nombre, eslogan, logotipo y colores">🎨 Personalizar</button>
+    </article>
     <div class="kpis">
       ${kpi('💶', 'Ingresos totales', formatMoney(s.totalEarned), 'Dinero ganado con entregas')}
       ${kpi('🧾', 'Gastos operativos', formatMoney(expenses), `Combustible ${formatMoney(s.expenses.fuel)} · Sueldos ${formatMoney(s.expenses.salaries)} · Mantenimiento ${formatMoney(s.expenses.upkeep)}`)}

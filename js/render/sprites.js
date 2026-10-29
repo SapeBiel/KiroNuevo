@@ -1,5 +1,7 @@
 // Sprites dibujados por código: vehículos, drones y marcadores.
 
+import { DEFAULT_COMPANY, getLogo } from '../systems/branding.js';
+
 export function roundRect(ctx, x, y, w, h, r) {
   const radius = Math.min(r, w / 2, h / 2);
   ctx.beginPath();
@@ -23,8 +25,43 @@ export function shade(hex, amount) {
   return `rgb(${r},${g},${b})`;
 }
 
-/** Vehículo visto desde arriba, orientado hacia +x. */
-export function drawVehicle(ctx, type, x, y, angle, { braking = false, lightsOn = false, alpha = 1 } = {}) {
+const EMOJI_FONT = '"Segoe UI Emoji","Apple Color Emoji","Noto Color Emoji",sans-serif';
+
+/**
+ * Logotipo de la empresa en un cuadrado de lado s: la caja de cartón original o
+ * el icono elegido sobre el color de detalle. Lo usan el almacén y la rotulación de los vehículos.
+ */
+export function drawBrandMark(ctx, x, y, s, company = DEFAULT_COMPANY) {
+  const logo = getLogo(company?.logo);
+  ctx.save();
+  if (logo.id === 'box') {
+    ctx.fillStyle = '#b9824a';
+    roundRect(ctx, x, y, s, s, s * 0.14);
+    ctx.fill();
+    ctx.fillStyle = '#e8c48e';
+    ctx.fillRect(x + s * 0.4, y, s * 0.2, s);
+    ctx.lineWidth = Math.max(2, s * 0.06);
+    ctx.strokeStyle = '#6b4423';
+    roundRect(ctx, x, y, s, s, s * 0.14);
+    ctx.stroke();
+  } else {
+    ctx.fillStyle = company.accent ?? DEFAULT_COMPANY.accent;
+    roundRect(ctx, x, y, s, s, s * 0.22);
+    ctx.fill();
+    ctx.lineWidth = Math.max(1.5, s * 0.05);
+    ctx.strokeStyle = 'rgba(0,0,0,0.28)';
+    ctx.stroke();
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = `${Math.round(s * 0.68)}px ${EMOJI_FONT}`;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(logo.icon, x + s / 2, y + s * 0.55);
+  }
+  ctx.restore();
+}
+
+/** Vehículo visto desde arriba, orientado hacia +x. "stripe" (opcional) es la franja de la empresa. */
+export function drawVehicle(ctx, type, x, y, angle, { braking = false, lightsOn = false, alpha = 1, stripe = null } = {}) {
   const L = type.length;
   const W = type.width;
   ctx.save();
@@ -98,6 +135,13 @@ export function drawVehicle(ctx, type, x, y, angle, { braking = false, lightsOn 
       ctx.closePath();
       ctx.fill();
     }
+  }
+
+  // Franjas laterales con el color de la empresa
+  if (stripe) {
+    ctx.fillStyle = stripe;
+    ctx.fillRect(-L / 2 + 3, -W / 2 + 0.6, L - 9, 1.8);
+    ctx.fillRect(-L / 2 + 3, W / 2 - 2.4, L - 9, 1.8);
   }
 
   // Faros y luces traseras
